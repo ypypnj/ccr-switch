@@ -1,0 +1,31 @@
+{
+  "LOG": true,
+  "LOG_LEVEL": "info",
+  "API_TIMEOUT_MS": 600000,
+  "Providers": [
+    {
+      "name": "ds",
+      "api_base_url": "https://api.deepseek.com/anthropic/v1/messages",
+      "api_key": "sk-YOUR_DEEPSEEK_API_KEY",
+      "models": ["v4pro", "v4flash"],
+      "transformer": { "use": ["Anthropic"] }
+    },
+    {
+      "name": "mm",
+      "api_base_url": "https://api.minimaxi.com/anthropic/v1/messages",
+      "api_key": "sk-YOUR_MINIMAX_API_KEY",
+      "models": ["m2.7", "MiniMax-M2.7"],
+      "transformer": { "use": ["Anthropic"] }
+    }
+  ],
+  "Router": {
+    "default": "ds,v4pro",
+    "background": "ds,v4flash",
+    "think": "ds,v4pro",
+    "longContext": "mm,m2.7",
+    "longContextThreshold": 30000,
+    "webSearch": "ds,v4pro",
+    "doc": "mm,m2.7",
+    "test": "mm,m2.7"
+  }
+}
