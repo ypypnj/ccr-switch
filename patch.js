@@ -53,3 +53,29 @@ if (originalHash === newHash) {
 fs.copyFileSync(cliJs, cliJs + ".bak." + originalHash);
 fs.writeFileSync(cliJs, code);
 console.log("[patch] Done. Backup:", path.basename(cliJs) + ".bak." + originalHash);
+
+// ============================================================
+// v1.1.0: Router middleware fix - detect haiku/flash for background
+// ============================================================
+function patchRouterBackground(code) {
+  const oldCond = '(e.body.model?.includes("claude")&&e.body.model?.includes("haiku")||e.body.model?.includes("flash"))';
+  const newCond = '(e.body.model?.includes("haiku")||e.body.model?.includes("flash"))';
+  if (code.includes(newCond)) {
+    console.log("[patch] Router: haiku/flash detection already applied");
+    return code;
+  }
+  if (code.includes(oldCond)) {
+    code = code.replace(oldCond, newCond);
+    console.log("[patch] Router: simplified haiku/flash detection");
+    return code;
+  }
+  // Try original pattern
+  const origCond = 'e.body.model?.includes("claude")&&e.body.model?.includes("haiku")&&c?.background';
+  if (code.includes(origCond)) {
+    code = code.replace(origCond, '(e.body.model?.includes("haiku")||e.body.model?.includes("flash"))&&c?.background');
+    console.log("[patch] Router: added haiku/flash detection");
+  } else {
+    console.log("[patch] Router: pattern not found, skipping Router fix");
+  }
+  return code;
+}
