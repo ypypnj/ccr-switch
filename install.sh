@@ -45,13 +45,31 @@ fi
 CCR_DIR="${HOME}/.claude-code-router"
 mkdir -p "${CCR_DIR}"
 
-if [[ -f "${CCR_DIR}/config.json" ]]; then
-  cp "${CCR_DIR}/config.json" "${CCR_DIR}/config.json.bak.$(date +%s)"
-  warn "Existing config.json backed up."
+if [[ -f "${SCRIPT_DIR}/config.json" ]]; then
+  # User has their own config.json
+  if [[ -f "${CCR_DIR}/config.json" ]]; then
+    cp "${CCR_DIR}/config.json" "${CCR_DIR}/config.json.bak.$(date +%s)"
+    warn "Existing config.json backed up."
+  fi
+  cp "${SCRIPT_DIR}/config.json" "${CCR_DIR}/config.json"
+  ok "Config copied to ${CCR_DIR}/config.json"
+elif [[ -f "${SCRIPT_DIR}/config.example.json" ]]; then
+  # New user: copy from example template
+  if [[ -f "${CCR_DIR}/config.json" ]]; then
+    cp "${CCR_DIR}/config.json" "${CCR_DIR}/config.json.bak.$(date +%s)"
+    warn "Existing config.json backed up."
+  fi
+  cp "${SCRIPT_DIR}/config.example.json" "${CCR_DIR}/config.json"
+  warn "=============================================="
+  warn "  config.example.json copied as config.json"
+  warn "  EDIT IT with your API keys before using CCR:"
+  warn "  vim ${CCR_DIR}/config.json"
+  warn "=============================================="
+else
+  err "No config.json or config.example.json found in ${SCRIPT_DIR}"
+  err "Create ~/.claude-code-router/config.json manually."
+  exit 1
 fi
-
-cp "${SCRIPT_DIR}/config.json" "${CCR_DIR}/config.json"
-ok "Config copied to ${CCR_DIR}/config.json"
 
 # ── 3. Patch CCR transformers ──────────────────────────────────────────────
 info "Patching CCR transformers..."
