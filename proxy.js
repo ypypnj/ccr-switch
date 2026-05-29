@@ -94,21 +94,8 @@ function normalizeRequest(body) {
       body.messages = body.messages.filter(function(m) { return m.role !== 'system'; });
     }
   }
-  var m = body.model || '';
-  if (m.includes("haiku")) {
-    delete body.thinking; delete body.reasoning;
-    if (body.messages && Array.isArray(body.messages)) {
-      body.messages = body.messages.map(function(msg) {
-        var clean = {};
-        Object.keys(msg).forEach(function(k) { if (k !== 'thinking' && k !== 'reasoning_content') { clean[k] = msg[k]; } });
-        if (clean.content && Array.isArray(clean.content)) {
-          clean.content = clean.content.filter(function(c) { return c && c.type !== 'thinking'; });
-        }
-        return clean;
-      });
-    }
-  } else if (body.thinking && body.thinking.type === 'adaptive') {
-    body.thinking = { type: 'enabled', budget_tokens: 16000 };
+    if (body.thinking && body.thinking.type === "adaptive") {
+    body.thinking = { type: "enabled", budget_tokens: body.thinking.budget_tokens || 16000 };
   }
   return body;
 }
