@@ -95,7 +95,7 @@ function normalizeRequest(body) {
     }
   }
   var m = body.model || '';
-  if (m.includes('flash') || m.includes('haiku')) {
+  if (m.includes("haiku")) {
     delete body.thinking; delete body.reasoning;
     if (body.messages && Array.isArray(body.messages)) {
       body.messages = body.messages.map(function(msg) {
@@ -152,7 +152,7 @@ var server = http.createServer(function(req, res) {
         data = normalizeRequest(data);
 
         // Re-inject cached thinking blocks
-        if (data.model && !data.model.includes('flash') && !data.model.includes('haiku')) {
+        if (data.model && !data.model.includes('haiku')) {
           var injected = injectThink(data);
           if (injected > 0) { data.thinking = data.thinking || { type: 'enabled', budget_tokens: 16000 }; }
         }
