@@ -13,7 +13,7 @@ Claude Code  --http-->  proxy.js (127.0.0.1:3456)
       (ds,v4pro)       (ds,v4flash)       (mm,m2.7)
 ```
 
-Standalone ~220 line Node.js proxy. Zero external dependencies.
+Standalone ~230 line Node.js proxy. Zero external dependencies. Replaces the previous ccr-based architecture.
 
 ## Quick Start
 
@@ -26,40 +26,49 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 export ANTHROPIC_AUTH_TOKEN=any-string-is-ok
 ```
 
-## Models & Thinking
+Add env vars to `~/.bashrc`. Add `@reboot` crontab for auto-start.
 
-| Model | Route | Thinking | Effort |
-|-------|-------|----------|--------|
-| /model ds,v4pro | default, think | enabled (adaptive->enabled) | high (default) |
-| /model ds,v4flash | background | enabled (adaptive->enabled) | high (default) |
-| /model mm,m2.7 | Manual switch | native | high (default) |
+## Models
 
-- Thinking: enabled by default for all models
-- Effort: defaults to `high`, maps to DeepSeek `high`/`max` levels
-- User can override effort via Claude Code `/effort` command
+| Command | Provider | Model |
+|---------|----------|-------|
+| /model ds,v4pro | DeepSeek | V4 Pro |
+| /model ds,v4flash | DeepSeek | V4 Flash |
+| /model mm,m2.7 | MiniMax | M2.7 |
 
-## Dynamic Model Switching
+Chinese comma ( ，) auto-normalized to ASCII comma.
 
-`/model` works within the same conversation. No tmux restart needed.
+## What the Proxy Does
 
-## Format Fixes
+Minimal intervention — only handles what is strictly necessary:
 
-| Fix | Description |
-|-----|-------------|
-| System role | Moves `role:"system"` from messages array to top-level `system` field |
-| Adaptive thinking | Converts `thinking:{type:"adaptive"}` to `{type:"enabled",budget_tokens:N}` |
-| Default effort | Sets `output_config.effort:"high"` when not specified |
-| Thinking cache | FIFO queue: extracts thinking blocks from streaming responses, re-injects into next request |
-| Signature replace | Replaces DeepSeek-specific thinking signatures with generic ones |
+| Fix | Why |
+|-----|-----|
+| System role → top-level | Claude Code v2.1.156 put system in messages (fixed in v2.1.158, kept as no-op safety net) |
+| adaptive → enabled | DeepSeek Anthropic endpoint does not support adaptive thinking type |
+| Chinese comma fix | `/model` input may use Chinese comma |
+| /v1/models endpoint | Required for `/model` command validation |
 
-## Token Cost
+## What the Proxy Does NOT Do
 
-Thinking blocks are part of DeepSeek responses and MUST be passed back for multi-turn conversations. The proxy restores what Claude Code strips. No additional token cost beyond normal thinking mode usage.
+- No thinking block caching or injection
+- No default effort override
+- No thinkingBudget manipulation
+- No signature rewriting
+
+## Comparison with Direct Connection
+
+| Aspect | Direct DeepSeek | Through Proxy |
+|--------|----------------|---------------|
+| thinking type | adaptive (native) | adaptive→enabled |
+| effort | set by /effort | set by /effort |
+| model switching | no | yes (3 providers) |
+| thinking cost | same | same |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| proxy.js | Standalone proxy — all logic |
+| proxy.js | Standalone proxy |
 | config.example.json | Legacy ccr config |
 | patch.js | Legacy ccr patches |
