@@ -97,6 +97,9 @@ function normalizeRequest(body) {
     if (body.thinking && body.thinking.type === "adaptive") {
     body.thinking = { type: "enabled", budget_tokens: body.thinking.budget_tokens || 16000 };
   }
+  // Default effort to high if not set
+  if (!body.output_config) { body.output_config = { effort: "high" }; }
+  else if (!body.output_config.effort) { body.output_config.effort = "high"; }
   return body;
 }
 
