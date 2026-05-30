@@ -16,7 +16,7 @@ function log(msg) {
 
 var PROVIDERS = {
   ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY_REDACTED__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash' } },
-  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm2.7': 'MiniMax-M2.7' } }
+  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm2.7': 'MiniMax-M2.7', 'mm': 'MiniMax-M2.7' } }
 };
 
 var thinkCache = {};
@@ -61,12 +61,13 @@ function injectThink(reqBody) {
   return injected;
 }
 
-function resolveModel(model) {
+function resolveModel(model) { model = (model || 'v4pro').replace(/\uff0c/g, ',');
   var parts = (model || 'v4pro').split(',');
   if (parts.length === 2) {
     var prov = parts[0], mod = parts[1];
     if (PROVIDERS[prov] && PROVIDERS[prov].models[mod]) return { provider: PROVIDERS[prov], model: PROVIDERS[prov].models[mod] };
   }
+  if (model.startsWith("mm")) return { provider: PROVIDERS.mm, model: PROVIDERS.mm.models["m2.7"] };
   for (var p in PROVIDERS) {
     if (PROVIDERS[p].models[model]) return { provider: PROVIDERS[p], model: PROVIDERS[p].models[model] };
   }
