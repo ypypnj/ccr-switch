@@ -16,7 +16,7 @@ function log(msg) {
 
 var PROVIDERS = {
   ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY_REDACTED__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash' } },
-  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm2.7': 'MiniMax-M2.7', 'mm': 'MiniMax-M2.7' } }
+  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm2.7': 'MiniMax-M2.7' } }
 };
 
 var thinkCache = {};
@@ -67,7 +67,6 @@ function resolveModel(model) { model = (model || 'v4pro').replace(/\uff0c/g, ','
     var prov = parts[0], mod = parts[1];
     if (PROVIDERS[prov] && PROVIDERS[prov].models[mod]) return { provider: PROVIDERS[prov], model: PROVIDERS[prov].models[mod] };
   }
-  if (model.startsWith("mm")) return { provider: PROVIDERS.mm, model: PROVIDERS.mm.models["m2.7"] };
   for (var p in PROVIDERS) {
     if (PROVIDERS[p].models[model]) return { provider: PROVIDERS[p], model: PROVIDERS[p].models[model] };
   }
@@ -180,9 +179,8 @@ var server = http.createServer(function(req, res) {
               res.end();
               // Extract thinking blocks from streaming response for caching
               if (upRes.statusCode === 200) {
-                var blocks = parseSSEThinking(fullText);
+                var blocks = []; // parseSSEThinking disabled
                 if (blocks.length > 0) {
-                  cacheThink(blocks);
                   log('STREAM DONE cached=' + blocks.length);
                 } else {
                   log('STREAM DONE (no thinking blocks)');
@@ -211,7 +209,7 @@ var server = http.createServer(function(req, res) {
                       }
                     });
                   }
-                  if (blocks.length > 0) { cacheThink(blocks); }
+                  if (blocks.length > 0) { }
                   var fixed = JSON.stringify(rj);
                   res.writeHead(upRes.statusCode, upRes.headers);
                   res.end(fixed);
@@ -233,6 +231,15 @@ var server = http.createServer(function(req, res) {
         res.writeHead(400); res.end(JSON.stringify({error:{message:'Bad request'}}));
       }
     });
+  } else if (req.url === '/v1/models' || req.url.startsWith('/v1/models?')) {
+    var models = [];
+    for (var p in PROVIDERS) {
+      for (var m in PROVIDERS[p].models) {
+        models.push({ id: p + ',' + m, object: 'model', owned_by: p });
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', data: models }));
   } else if (req.url === '/health') {
     res.writeHead(200); res.end(JSON.stringify({ status: 'ok' }));
   } else {
