@@ -61,7 +61,7 @@ function injectThink(reqBody) {
   return injected;
 }
 
-function resolveModel(model) { model = (model || 'v4pro').replace(/\uff0c/g, ',');
+function resolveModel(model) { model = (model || "v4pro").replace(/，/g, ","); model = (model || 'v4pro').replace(/\uff0c/g, ',');
   var parts = (model || 'v4pro').split(',');
   if (parts.length === 2) {
     var prov = parts[0], mod = parts[1];
@@ -132,6 +132,7 @@ var server = http.createServer(function(req, res) {
     req.on('end', function() {
       try {
         var data = JSON.parse(body);
+        var originalModel = data.model;
         var thinkBlocksIn = countThinking(data);
         log('REQ model=' + data.model + ' msgs=' + (data.messages||[]).length + ' think=' + thinkBlocksIn + ' top=' + JSON.stringify(data.thinking));
 
@@ -208,9 +209,10 @@ var server = http.createServer(function(req, res) {
                     });
                   }
                   if (blocks.length > 0) { }
-                  var fixed = JSON.stringify(rj);
-                  res.writeHead(upRes.statusCode, upRes.headers);
-                  res.end(fixed);
+                  rj.model = originalModel;
+              if (!rj.stop_sequence && rj.stop_sequence !== null) { rj.stop_sequence = null; }
+              delete rj.base_resp;
+              var fixed = JSON.stringify(rj); var hdrs={}; Object.keys(upRes.headers).forEach(function(k){hdrs[k]=upRes.headers[k]}); hdrs["content-length"]=Buffer.byteLength(fixed); res.writeHead(upRes.statusCode, hdrs); res.end(fixed);
                   log('OK model=' + rj.model + ' cached=' + blocks.length);
                 } catch(e) {
                   log('OK (raw pipe)');
