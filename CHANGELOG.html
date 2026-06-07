@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>更新日志 — ccr-switch</title>
+  <style>
+    :root {
+      --bg-primary: #1a1a2e; --bg-card: #16213e;
+      --bg-code: #0f3460; --text-primary: #e0e0e0;
+      --text-secondary: #a0a0b0; --accent: #e94560;
+      --accent-cyan: #0fbfbf; --accent-green: #53d769;
+      --accent-yellow: #fecb2e; --border: #2a2a4a;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-primary); color: var(--text-primary);
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 24px 20px;
+    }
+    h1, h2, h3 {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      color: var(--accent-cyan); margin: 24px 0 12px;
+    }
+    h1 { font-size: 1.8em; border-bottom: 2px solid var(--accent); padding-bottom: 8px; }
+    h2 { font-size: 1.4em; margin-top: 32px; }
+    h3 { font-size: 1.1em; color: var(--accent-yellow); }
+    code { font-family: monospace; background: var(--bg-code); padding: 2px 6px; border-radius: 4px; }
+    pre { background: var(--bg-code); padding: 16px; border-radius: var(--radius); overflow-x: auto; margin: 12px 0; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    th { background: var(--bg-code); color: var(--accent-yellow); }
+    th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+    a { color: var(--accent-cyan); }
+    .meta { color: var(--text-secondary); font-size: 0.85em; margin: 4px 0 20px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; }
+    .badge-added { background: var(--accent-green); color: #000; }
+    .badge-changed { background: var(--accent-yellow); color: #000; }
+    .badge-fixed { background: var(--accent-cyan); color: #000; }
+    .badge-removed { background: var(--accent); color: #fff; }
+    ul { margin: 8px 0 8px 24px; }
+    li { margin: 4px 0; }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      table { font-size: 0.85em; }
+    }
+  </style>
+</head>
+<body>
+  <article>
+    <h1>更新日志 (Changelog)</h1>
+    <p class="meta">项目: ccr-switch · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-07</p>
+
+    <!-- v1.2.0 -->
+    <h2 id="v1.2.0">v1.2.0 — 2026-06-07</h2>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li>MiniMax M3 模型支持（<code>/model mm,m3</code>），替换原有的 M2.7</li>
+      <li>M3 默认启用 extended thinking（<code>budget_tokens=32000</code>），在请求中自动注入 <code>thinking: { type: "enabled", budget_tokens: 32000 }</code></li>
+    </ul>
+
+    <h3><span class="badge badge-changed">Changed</span></h3>
+    <ul>
+      <li>MiniMax provider 模型映射从 <code>m2.7→MiniMax-M2.7</code> 改为 <code>m3→MiniMax-M3</code></li>
+      <li><code>config.json</code> 和 <code>config.example.json</code> 中所有 m2.7 引用更新为 m3</li>
+      <li>README.md 和 SKILL.md 文档更新，反映 M3 替换</li>
+    </ul>
+
+    <h3><span class="badge badge-removed">Removed</span></h3>
+    <ul>
+      <li>移除 MiniMax M2.7 模型支持</li>
+    </ul>
+
+    <!-- v1.1.0 -->
+    <h2 id="v1.1.0">v1.1.0 — 2026-05-30</h2>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li>修复响应体修改后 content-length 重新计算问题</li>
+      <li>修复 Chinese comma（全角逗号）自动归一化到 ASCII comma</li>
+    </ul>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li>新增 <code>/v1/models</code> 端点，支持 <code>/model</code> 命令验证</li>
+    </ul>
+
+    <!-- v1.0.0 -->
+    <h2 id="v1.0.0">v1.0.0 — 2026-05-26</h2>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li>初始版本，独立 Node.js proxy（零外部依赖）替代原有 CCR 架构</li>
+      <li>DeepSeek V4 Pro / V4 Flash + MiniMax M2.7 多 provider 路由</li>
+      <li>System role 提升到 top-level 的兼容修复</li>
+      <li>adaptive→enabled thinking type 转换</li>
+    </ul>
+  </article>
+</body>
+</html>

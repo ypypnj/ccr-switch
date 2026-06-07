@@ -1,6 +1,6 @@
 # ccr-switch v2.0.0
 
-Multi-provider model switching for Claude Code. DeepSeek V4 Pro / V4 Flash + MiniMax M2.7.
+Multi-provider model switching for Claude Code. DeepSeek V4 Pro / V4 Flash + MiniMax M3.
 
 ## Architecture
 
@@ -9,8 +9,8 @@ Claude Code  --http-->  proxy.js (127.0.0.1:3456)
                              |
               +--------------+--------------+
               |              |              |
-      DeepSeek V4 Pro  DeepSeek V4 Flash  MiniMax M2.7
-      (ds,v4pro)       (ds,v4flash)       (mm,m2.7)
+      DeepSeek V4 Pro  DeepSeek V4 Flash  MiniMax M3
+      (ds,v4pro)       (ds,v4flash)       (mm,m3)
 ```
 
 Standalone ~230 line Node.js proxy. Zero external dependencies. Replaces the previous ccr-based architecture.
@@ -34,7 +34,7 @@ Add env vars to `~/.bashrc`. Add `@reboot` crontab for auto-start.
 |---------|----------|-------|
 | /model ds,v4pro | DeepSeek | V4 Pro |
 | /model ds,v4flash | DeepSeek | V4 Flash |
-| /model mm,m2.7 | MiniMax | M2.7 |
+| /model mm,m3 | MiniMax | M3 (thinking enabled) |
 
 Chinese comma ( ，) auto-normalized to ASCII comma.
 
@@ -48,12 +48,12 @@ Minimal intervention — only handles what is strictly necessary:
 | adaptive → enabled | DeepSeek Anthropic endpoint does not support adaptive thinking type |
 | Chinese comma fix | `/model` input may use Chinese comma |
 | /v1/models endpoint | Required for `/model` command validation |
+| M3 thinking auto-enable | MiniMax M3 默认启用 extended thinking（budget_tokens=32000） |
 
 ## What the Proxy Does NOT Do
 
-- No thinking block caching or injection
+- No thinking block caching or injection (streaming cache disabled)
 - No default effort override
-- No thinkingBudget manipulation
 - No signature rewriting
 
 ## Comparison with Direct Connection
@@ -72,3 +72,11 @@ Minimal intervention — only handles what is strictly necessary:
 | proxy.js | Standalone proxy |
 | config.example.json | Legacy ccr config |
 | patch.js | Legacy ccr patches |
+
+## 版本历史
+
+| 日期 | 版本 | 变更 |
+|------|------|------|
+| 2026-06-07 | v1.2.0 | MiniMax M2.7 → M3 替换，M3 默认启用 extended thinking |
+| 2026-05-30 | v1.1.0 | 修复 content-length 重新计算，Chinese comma 兼容 |
+| 2026-05-26 | v1.0.0 | 初始版本，DeepSeek V4 Pro/Flash + MiniMax M2.7 |

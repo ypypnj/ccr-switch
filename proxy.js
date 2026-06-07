@@ -15,8 +15,8 @@ function log(msg) {
 }
 
 var PROVIDERS = {
-  ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY_REDACTED__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash' } },
-  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm2.7': 'MiniMax-M2.7' } }
+  ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY_REDACTED__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash', 'claude-sonnet-4-6': 'deepseek-v4-pro', 'claude-opus-4-8': 'deepseek-v4-pro', 'claude-haiku-4-5': 'deepseek-v4-flash' } },
+  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm3': 'MiniMax-M3' } }
 };
 
 var thinkCache = {};
@@ -94,9 +94,7 @@ function normalizeRequest(body) {
       body.messages = body.messages.filter(function(m) { return m.role !== 'system'; });
     }
   }
-    if (body.thinking && body.thinking.type === "adaptive") {
-    body.thinking = { type: "enabled", budget_tokens: body.thinking.budget_tokens || 16000 };
-  }
+    // adaptive thinking passes through natively (matching direct DeepSeek behavior)
   // Do NOT set default effort — conflicts with thinking=disabled
   return body;
 }
@@ -139,6 +137,11 @@ var server = http.createServer(function(req, res) {
         var resolved = resolveModel(data.model);
         data.model = resolved.model;
         data = normalizeRequest(data);
+
+        // M3 模型默认启用 thinking（支持 extended thinking 模式）
+        if (data.model && data.model.includes('MiniMax-M3')) {
+          data.thinking = data.thinking || { type: 'enabled', budget_tokens: 32000 };
+        }
 
         // Re-inject cached thinking blocks
         if (data.model && !data.model.includes('haiku')) {

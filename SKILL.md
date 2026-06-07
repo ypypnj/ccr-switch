@@ -1,6 +1,6 @@
 # CCR Switch — Multi-Provider Model Switching for Claude Code
 
-Configures [Claude Code Router (CCR)](https://github.com/musistudio/claude-code-router) v2.0.0 to route Claude Code requests through **DeepSeek** (V4 Pro / V4 Flash) and **MiniMax** (M2.7), with full **deep reasoning (thinking) support** on DeepSeek V4 Pro.
+Configures [Claude Code Router (CCR)](https://github.com/musistudio/claude-code-router) v2.0.0 to route Claude Code requests through **DeepSeek** (V4 Pro / V4 Flash) and **MiniMax** (M3), with full **deep reasoning (thinking) support** on DeepSeek V4 Pro and MiniMax M3.
 
 ---
 
@@ -11,10 +11,10 @@ Claude Code  ──http──>  CCR (127.0.0.1:3456)
                              │
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
-      DeepSeek V4 Pro  DeepSeek V4 Flash  MiniMax M2.7
-      (ds,v4pro)       (ds,v4flash)       (mm,m2.7)
+      DeepSeek V4 Pro  DeepSeek V4 Flash  MiniMax M3
+      (ds,v4pro)       (ds,v4flash)       (mm,m3)
       OpenAI compat    OpenAI compat      OpenAI compat
-      + thinking ✅     fast mode          + native thinking
+      + thinking ✅     fast mode          + native thinking ✅
 ```
 
 ---
@@ -25,7 +25,7 @@ Claude Code  ──http──>  CCR (127.0.0.1:3456)
 |---|---|---|---|
 | `/model ds,v4pro` | default, think, webSearch | General + deep reasoning | ✅ Full |
 | `/model ds,v4flash` | background | Fast / background tasks | N/A |
-| `/model mm,m2.7` | longContext (60k+ chars) | Long docs, plugins | ✅ Native `<think>` |
+| `/model mm,m3` | longContext (60k+ chars) | Long docs, plugins | ✅ Extended thinking |
 
 ---
 
@@ -35,7 +35,7 @@ patch.js modifies CCR's `dist/cli.js` to fix the thinking/reasoning round-trip t
 
 | Layer | Location | Fix |
 |---|---|---|
-| 1. Model mapping | DeepSeek + Anthropic transformers | Short names (`v4pro`, `m2.7`) → full API identifiers |
+| 1. Model mapping | DeepSeek + Anthropic transformers | Short names (`v4pro`, `m3`) → full API identifiers |
 | 2. Anthropic source | `transformRequestOut` | Keep `thinking→reasoning` conversion; handle empty-signature thinking blocks from conversation history |
 | 3. DeepSeek transformer | `transformRequestIn` | Convert `m.thinking` → `m.reasoning_content` for OpenAI format; strip Anthropic `thinking` field; filter thinking blocks from system/messages |
 | 4. fD function | Pre + post auth | Model name mapping with `provider,model` prefix handling |

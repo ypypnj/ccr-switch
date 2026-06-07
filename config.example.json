@@ -24,8 +24,8 @@
       "api_base_url": "https://api.minimaxi.com/anthropic/v1/messages",
       "api_key": "sk-YOUR_MINIMAX_API_KEY",
       "models": [
-        "m2.7",
-        "MiniMax-M2.7"
+        "m3",
+        "MiniMax-M3"
       ],
       "transformer": {
         "use": [
@@ -38,10 +38,10 @@
     "default": "ds,v4pro",
     "background": "ds,v4flash",
     "think": "ds,v4pro",
-    "longContext": "mm,m2.7",
+    "longContext": "mm,m3",
     "longContextThreshold": 30000,
     "webSearch": "ds,v4pro",
-    "doc": "mm,m2.7",
-    "test": "mm,m2.7"
+    "doc": "mm,m3",
+    "test": "mm,m3"
   }
 }
