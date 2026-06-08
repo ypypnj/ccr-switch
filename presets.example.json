@@ -1,0 +1,48 @@
+{
+  "_comment": "presets.json 模板。复制为 presets.json 后使用。本文件不含任何 API key,可安全入库。",
+  "presets": [
+    {
+      "id": "ds",
+      "alias": "ds,v4pro",
+      "label": "DeepSeek V4 Pro",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "<DS_KEY>",
+        "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
+        "CLAUDE_CODE_EFFORT_LEVEL": "max"
+      }
+    },
+    {
+      "id": "mm",
+      "alias": "mm,m3",
+      "label": "MiniMax M3",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "<MM_KEY>",
+        "ANTHROPIC_MODEL": "MiniMax-M3"
+      }
+    },
+    {
+      "id": "bd",
+      "alias": "bd,glm5.1",
+      "label": "Baidu Qianfan GLM-5.1",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://qianfan.baidubce.com/anthropic/coding",
+        "ANTHROPIC_AUTH_TOKEN": "<BD_KEY>",
+        "ANTHROPIC_MODEL": "glm-5.1"
+      }
+    }
+  ],
+  "ccr": {
+    "label": "ccr-switch 代理 (ds, v4pro / mm, m3 / bd, glm5.1)",
+    "env": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+      "ANTHROPIC_AUTH_TOKEN": "any-string-is-ok",
+      "ANTHROPIC_TIMEOUT": "600"
+    }
+  }
+}

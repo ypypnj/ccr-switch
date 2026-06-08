@@ -14,9 +14,14 @@ function log(msg) {
   try { fs.appendFileSync(LOG, line + '\n'); } catch(e) {}
 }
 
+// provider 配置:每加一个 provider,在 PROVIDERS 加一条,
+// models 字典的 key 是用户传的短名(provider,short),value 是上游完整模型名
+// ccr-switch v1.3.0 新增 bd (Baidu Qianfan) provider
+// v1.3.0 安全改造:真 key 不再硬编码,使用占位符 __MM_KEY__ / __BD_KEY__ / __DS_KEY__,运行时由 install.sh 替换为 ~/.claude/dev-flow/credentials.json 中的真 key
 var PROVIDERS = {
-  ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY_REDACTED__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash', 'claude-sonnet-4-6': 'deepseek-v4-pro', 'claude-opus-4-8': 'deepseek-v4-pro', 'claude-haiku-4-5': 'deepseek-v4-flash' } },
-  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY_REDACTED__', models: { 'm3': 'MiniMax-M3' } }
+  ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash', 'claude-sonnet-4-6': 'deepseek-v4-pro', 'claude-opus-4-8': 'deepseek-v4-pro', 'claude-haiku-4-5': 'deepseek-v4-flash' } },
+  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY__', models: { 'm3': 'MiniMax-M3' } },
+  bd: { url: 'https://qianfan.baidubce.com/anthropic/coding/v1/messages', key: '__BD_KEY__', models: { 'glm5.1': 'glm-5.1' } }
 };
 
 var thinkCache = {};
