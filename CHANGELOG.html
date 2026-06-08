@@ -50,7 +50,31 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-07</p>
+    <p class="meta">项目: ccr-switch · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+
+    <!-- v1.3.0 -->
+    <h2 id="v1.3.0">v1.3.0 — 2026-06-09</h2>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li>百度千帆 (Baidu Qianfan) provider：<code>/model bd,glm5.1</code> → 上游 <code>glm-5.1</code>（<code>https://qianfan.baidubce.com/anthropic/coding</code>）</li>
+      <li>GLM-5.1 默认启用 extended thinking（<code>budget_tokens=8000</code>，保守策略）</li>
+      <li><code>presets.json</code> 单源真理：3 个直连预设（<code>ds,v4pro</code> / <code>mm,m3</code> / <code>bd,glm5.1</code>）+ ccr 代理段</li>
+      <li><code>ccr-switch-off</code> / <code>ccr-switch-on</code> 一键切换：代理 ⇄ 直连（3 预设 + 自定义）</li>
+      <li>交互式菜单支持 <code>[1]</code> / <code>[2]</code> / <code>[3]</code> / <code>[C]</code> 或短别名 <code>ds</code> / <code>mm</code> / <code>bd</code></li>
+    </ul>
+
+    <h3><span class="badge badge-changed">Changed</span></h3>
+    <ul>
+      <li>安全改造：<code>proxy.js</code> 中真 key 全部替换为占位符 <code>__DS_KEY__</code> / <code>__MM_KEY__</code> / <code>__BD_KEY__</code>，运行时由 <code>install.sh</code> 从 <code>~/.claude/dev-flow/credentials.json</code>（chmod 600）替换</li>
+      <li><code>install.sh</code> 重写为 9 步：ccr CLI → config → patch → presets → credentials（迁移旧 proxy.js key、交互提示缺失）→ 占位符替换 → 部署 off/on → .bashrc marker 块 → 启动代理</li>
+      <li><code>.bashrc</code> 用 marker 块（<code># &gt;&gt;&gt; ccr-switch managed block &gt;&gt;&gt;</code>）管理，off/on 严格幂等</li>
+    </ul>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li>无 key 时 <code>install.sh</code> 仍能完成安装，对应 provider 在运行时报错而非安装时阻塞</li>
+    </ul>
 
     <!-- v1.2.0 -->
     <h2 id="v1.2.0">v1.2.0 — 2026-06-07</h2>
