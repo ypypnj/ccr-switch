@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+#
+# ccr-switch-on — 恢复 ccr-switch 代理模式,改 .bashrc 切到 ccr 端点
+#
+# 用法:
+#   ccr-switch-on
+#
+# 副作用:
+#   1. 改写 ~/.bashrc 中 managed 块为 ccr 段(读 presets.json)
+#   2. 启动 proxy.js 监听 3456
+#   3. 健康检查 curl /health
+#   4. 提示重启 Claude Code session
+#
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+info()  { echo -e "\033[0;36m[INFO]\033[0m  $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# 自定位
+SCRIPT_REAL="$(readlink -f "$0")"
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_REAL")/.." 2>/dev/null && pwd || true)"
+if [[ ! -f "${REPO_ROOT}/presets.json" && -f "/root/ese-project/ccr-switch/presets.json" ]]; then
+  REPO_ROOT="/root/ese-project/ccr-switch"
+fi
+
+PRESETS_FILE="${REPO_ROOT}/presets.json"
+PROXY_JS="${REPO_ROOT}/proxy.js"
+BASHRC="${HOME}/.bashrc"
+HEALTH_URL="http://127.0.0.1:3456/health"
+
+MARKER_BEGIN="# >>> ccr-switch managed block (do not edit) >>>"
+MARKER_END="# <<< ccr-switch managed block <<<"
+
+# 预检
+if [[ ! -f "${PRESETS_FILE}" ]]; then
+  err "未找到 ${PRESETS_FILE}"
+  exit 1
+fi
+if [[ ! -f "${PROXY_JS}" ]]; then
+  err "未找到 ${PROXY_JS}"
+  exit 1
+fi
+
+# 拼装 ccr 段
+build_ccr_block() {
+  local label
+  label=$(jq -r '.ccr.label' "${PRESETS_FILE}")
+  cat <<EOF
+${MARKER_BEGIN}
+# 当前模式: ${label}
+EOF
+  jq -r '.ccr.env | to_entries[] | "export " + .key + "=" + (.value | tostring)' "${PRESETS_FILE}"
+  cat <<EOF
+${MARKER_END}
+EOF
+}
+
+# 写 .bashrc (idempotent)
+write_bashrc_block() {
+  local block_content="$1"
+  local tmp
+  tmp=$(mktemp)
+  awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" '
+    BEGIN { skip = 0 }
+    $0 == begin { skip = 1; next }
+    $0 == end   { skip = 0; next }
+    !skip { print }
+  ' "$BASHRC" > "$tmp"
+  if [[ -s "$tmp" ]] && [[ "$(tail -c 1 "$tmp")" != $'\n' ]]; then
+    echo "" >> "$tmp"
+  fi
+  echo "" >> "$tmp"
+  echo "$block_content" >> "$tmp"
+  mv "$tmp" "$BASHRC"
+  ok ".bashrc managed 块已恢复为 ccr 段"
+}
+
+# 启动代理
+start_proxy() {
+  if pgrep -f "node.*proxy.js.*3456" >/dev/null 2>&1; then
+    info "proxy.js 已在运行"
+    return 0
+  fi
+  info "启动 ccr-switch 代理..."
+  nohup node "${PROXY_JS}" 3456 > /tmp/proxy.log 2>&1 &
+  sleep 2
+}
+
+# 健康检查
+health_check() {
+  local i
+  for i in 1 2 3 4 5; do
+    if curl -sf "${HEALTH_URL}" >/dev/null 2>&1; then
+      ok "代理健康检查通过 (${HEALTH_URL})"
+      return 0
+    fi
+    sleep 1
+  done
+  err "健康检查失败,查看日志: tail -20 /tmp/proxy.log"
+  return 1
+}
+
+# 提示
+warn_running_claude() {
+  local pids
+  pids=$(pgrep -f "claude" 2>/dev/null | grep -v "$$" | head -5 || true)
+  if [[ -n "$pids" ]]; then
+    warn "检测到运行中的 claude 进程: $pids"
+    warn "切换后请关闭当前 Claude Code session,执行 'source ~/.bashrc' 后重启"
+  fi
+}
+
+# 主流程
+info "切换到 ccr-switch 代理模式..."
+block=$(build_ccr_block)
+write_bashrc_block "$block"
+start_proxy
+if ! health_check; then
+  exit 1
+fi
+warn_running_claude
+
+echo ""
+ok "已切换到 ccr-switch 代理模式"
+echo -e "  \033[0;36m下一步:\033[0m"
+echo -e "    1) 关闭当前 Claude Code session"
+echo -e "    2) 执行: source ~/.bashrc"
+echo -e "    3) 重新启动: claude"
+echo ""
+echo -e "  \033[0;36m切到直连:\033[0m ccr-switch-off [ds|mm|bd|custom]"
+echo ""
