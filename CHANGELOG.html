@@ -50,7 +50,29 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v1.3.2 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+
+    <!-- v1.3.2 -->
+    <h2 id="v1.3.2">v1.3.2 — 2026-06-09</h2>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li><strong>429 风暴导致进程退出根因修复</strong>：持续 429 时客户端(Claude)快速断开重试触发 <code>res.write</code> 的 <code>EPIPE</code>，原有代码未监听 <code>req</code>/<code>res</code>/<code>upRes</code>/<code>upstream</code> 的 <code>error</code> 事件，错误冒泡为 <code>uncaughtException</code> 杀掉整个 proxy 进程。新增四层 socket 错误监听 + 进程级 <code>uncaughtException</code> / <code>unhandledRejection</code> 兜底</li>
+      <li><strong>429 限流降级</strong>：收到上游 429 后进入 30s coolDown，期间同 provider 全部请求直接返回 503 + <code>Retry-After</code>。流式 429 必须立刻丢弃上游 body 改写为 503（非透传 429），否则客户端会持续重试让 coolDown 失效</li>
+      <li><strong>coolDown 字典污染修复</strong>：<code>shortNameOf</code> 旧版在模型名不含逗号时返回整个字符串，会让同 provider 不同 model 共享不到 coolDown 状态；新版严格校验 PROVIDERS key，否则返回 <code>null</code> 走 <code>unknown</code> 分桶</li>
+      <li><strong>流式 429 改写</strong>：流式分支收到 429 时不再透传 <code>upRes.statusCode</code>，立刻 <code>upRes.resume()</code> 丢弃上游 body 并写 503 + <code>Retry-After</code>，避免 coolDown 窗口形同虚设</li>
+    </ul>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li><strong>log rotate</strong>：<code>/tmp/proxy-debug.log</code> 超过 5MB 自动 <code>.log → .log.1</code> 轮转，防止长期运行撑爆 <code>/tmp</code></li>
+      <li><strong>进程异常保护</strong>：<code>process.on('uncaughtException')</code> + <code>process.on('unhandledRejection')</code> 双兜底；日志记录 code + message + stack 前 3 行</li>
+      <li><strong>socket 错误监听</strong>：<code>req</code>/<code>res</code>/<code>upRes</code>/<code>upstream</code> 四处全部 <code>.on('error')</code>，日志格式 <code>&lt;LABEL&gt; ERR &lt;code&gt; &lt;message&gt;</code></li>
+      <li><strong>日志注入防护</strong>：用户传入的 <code>data.model</code> 在写入日志前单行化（替换 <code>\r\n</code> 为空格），防止日志格式注入</li>
+      <li><code>tests/test-429-backoff-and-rotate.js</code>：8 项 TDD 测试守护 v1.3.2 的 4 项修复，防止静默回归</li>
+    </ul>
+
+    <!-- v1.3.1 -->
 
     <!-- v1.3.1 -->
     <h2 id="v1.3.1">v1.3.1 — 2026-06-09</h2>

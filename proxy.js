@@ -6,13 +6,56 @@ var fs = require('fs');
 var crypto = require('crypto');
 var PORT = process.argv[2] || 3456;
 var LOG = '/tmp/proxy-debug.log';
+var MAX_LOG_BYTES = 5 * 1024 * 1024; // 5MB 单文件上限,超限自动 rotate
+
+// 日志轮转:超过 MAX_LOG_BYTES 时把 .log → .log.1,新文件从空开始
+// 防止 ccr-switch 长期运行后 /tmp/proxy-debug.log 撑爆磁盘
+function rotateLog() {
+  try {
+    var stat = fs.statSync(LOG);
+    if (stat.size < MAX_LOG_BYTES) return;
+    var bak = LOG + '.1';
+    if (fs.existsSync(bak)) fs.unlinkSync(bak);
+    fs.renameSync(LOG, bak);
+  } catch(e) { /* 文件不存在等,首次启动吞掉 */ }
+}
 
 function log(msg) {
   var ts = new Date().toISOString();
   var line = ts + ' ' + msg;
   console.error(line);
-  try { fs.appendFileSync(LOG, line + '\n'); } catch(e) {}
+  try { rotateLog(); fs.appendFileSync(LOG, line + '\n'); } catch(e) {}
 }
+
+// 429 限流状态:每 provider 记录最近一次 429 时间,窗口内直接拒绝转发
+// 防止上游持续 429 时 proxy 自身刷爆日志,加剧客户端重试
+var coolDown = {}; // provider 短名(ds/mm/bd) → coolUntilEpochMs
+var COOL_DOWN_MS = 30 * 1000; // 限流后 30s 内同 provider 直接 503
+function isCoolingDown(providerShortName) {
+  var until = coolDown[providerShortName] || 0;
+  return Date.now() < until;
+}
+function markRateLimited(providerShortName) {
+  coolDown[providerShortName] = Date.now() + COOL_DOWN_MS;
+  log('RATE LIMIT provider=' + providerShortName + ' coolDown=' + COOL_DOWN_MS + 'ms');
+}
+// 从入参模型字符串里抽取 provider 短名(如 "mm,m3" → "mm")
+// 严格要求:含逗号 + 逗号前必须是已知 PROVIDERS key。否则返回 null,避免污染 coolDown 字典
+// (review by 3-person review group 2026-06-09: 旧版无逗号时返回整个 model 字符串,会让同 provider 不同 model 请求无法共享 coolDown 状态)
+function shortNameOf(modelStr) {
+  if (typeof modelStr !== 'string' || modelStr.indexOf(',') < 0) return null;
+  var head = modelStr.split(',')[0];
+  return PROVIDERS[head] ? head : null;
+}
+
+// 进程级异常保护 (v1.3.2):防止异步回调里的 unhandled error 把进程杀掉
+// 429 风暴 + 客户端快速断开 → 大量 EPIPE/RST → 不监听就 unhandledException → 进程退出
+process.on('uncaughtException', function(e) {
+  log('UNCAUGHT ' + (e && e.code ? e.code : '') + ' ' + (e && e.message ? e.message : String(e)));
+});
+process.on('unhandledRejection', function(reason) {
+  log('UNHANDLED REJECTION ' + (reason && reason.message ? reason.message : String(reason)));
+});
 
 // provider 配置:每加一个 provider,在 PROVIDERS 加一条,
 // models 字典的 key 是用户传的短名(provider,short),value 是上游完整模型名
@@ -129,6 +172,11 @@ function parseSSEThinking(text) {
 }
 
 var server = http.createServer(function(req, res) {
+  // 客户端 socket error 监听(v1.3.2):429 风暴中客户端快速断开重试,
+  // res.write 触发 EPIPE 默认会冒泡为 uncaughtException,杀掉整个 proxy 进程
+  req.on('error', function(e) { log('REQ ERR ' + e.code + ' ' + e.message); });
+  res.on('error', function(e) { log('RES ERR ' + e.code + ' ' + e.message); });
+
   if (req.method === 'POST' && req.url.startsWith('/v1/messages')) {
     var body = '';
     req.on('data', function(chunk) { body += chunk; });
@@ -137,9 +185,18 @@ var server = http.createServer(function(req, res) {
         var data = JSON.parse(body);
         var originalModel = data.model;
         var thinkBlocksIn = countThinking(data);
-        log('REQ model=' + data.model + ' msgs=' + (data.messages||[]).length + ' think=' + thinkBlocksIn + ' top=' + JSON.stringify(data.thinking));
+        log('REQ model=' + String(data.model).replace(/[\r\n]/g, ' ') + ' msgs=' + (data.messages||[]).length + ' think=' + thinkBlocksIn + ' top=' + JSON.stringify(data.thinking));
 
         var resolved = resolveModel(data.model);
+        var provName = shortNameOf(data.model) || 'unknown';
+        // 429 backoff (v1.3.2):该 provider 在 coolDown 窗口内,直接 503 拒收
+        // 减少上游 429 时的重试风暴,降低客户端断开概率
+        if (isCoolingDown(provName)) {
+          log('COOLING DOWN provider=' + provName + ' reject=503');
+          res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) });
+          res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider cooling down, retry in ' + (COOL_DOWN_MS/1000) + 's' } }));
+          return;
+        }
         data.model = resolved.model;
         data = normalizeRequest(data);
 
@@ -168,7 +225,17 @@ var server = http.createServer(function(req, res) {
         };
 
         var upstream = https.request(options, function(upRes) {
+          // 上游响应流 error 监听(v1.3.2):网络层 ECONNRESET/EPIPE 不监听会冒泡杀进程
+          upRes.on('error', function(e) { log('UPRES ERR ' + e.code + ' ' + e.message); });
           if (isStream) {
+            // 429 必须立刻改写为 503 + Retry-After 拒收(不能再透传 upRes.statusCode=429,
+            // 否则客户端会立刻重试,coolDown 窗口形同虚设)
+            if (upRes.statusCode === 429) {
+              markRateLimited(provName);
+              upRes.resume(); // 丢弃上游 body,防止 socket 悬挂
+              res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) });
+              return res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider 429, coolDown ' + (COOL_DOWN_MS/1000) + 's' } }));
+            }
             delete upRes.headers['content-length'];
             res.writeHead(upRes.statusCode, upRes.headers);
             var leftover = '';
@@ -201,9 +268,16 @@ var server = http.createServer(function(req, res) {
             upRes.on('data', function(c) { respBody += c; });
             upRes.on('end', function() {
               if (upRes.statusCode >= 400) {
-                log('ERROR ' + upRes.statusCode + ' ' + respBody.substring(0, 300));
-                res.writeHead(upRes.statusCode, upRes.headers);
-                res.end(respBody);
+                if (upRes.statusCode === 429) {
+                  // 429 单次记 RATE LIMIT 后进入 coolDown,向客户端返回 503(v1.3.2)
+                  markRateLimited(provName);
+                  res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+                  res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider 429, coolDown 30s' } }));
+                } else {
+                  log('ERROR ' + upRes.statusCode + ' ' + respBody.substring(0, 300));
+                  res.writeHead(upRes.statusCode, upRes.headers);
+                  res.end(respBody);
+                }
               } else {
                 try {
                   var rj = JSON.parse(respBody);
@@ -231,7 +305,12 @@ var server = http.createServer(function(req, res) {
             });
           }
         });
-        upstream.on('error', function(e) { log('NET ERROR ' + e.message); res.writeHead(502); res.end(JSON.stringify({error:{message:e.message}})); });
+        upstream.on('error', function(e) {
+          log('NET ERROR ' + (e && e.code || '') + ' ' + e.message);
+          // 防御性:res 可能已关闭(被 coolDown/429 提前 end),不检查会抛 ERR_STREAM_WRITE_AFTER_END
+          if (res.writableEnded) return;
+          try { res.writeHead(502); res.end(JSON.stringify({error:{message:e.message}})); } catch(_) {}
+        });
         upstream.write(postData);
         upstream.end();
       } catch(e) {
