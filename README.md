@@ -1,4 +1,4 @@
-# ccr-switch v1.3.0
+# ccr-switch v1.3.1
 
 Multi-provider model switching for Claude Code. DeepSeek V4 Pro / V4 Flash + MiniMax M3 + Baidu Qianfan GLM-5.1.
 

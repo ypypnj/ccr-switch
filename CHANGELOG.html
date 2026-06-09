@@ -52,6 +52,24 @@
     <h1>更新日志 (Changelog)</h1>
     <p class="meta">项目: ccr-switch · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
 
+    <!-- v1.3.1 -->
+    <h2 id="v1.3.1">v1.3.1 — 2026-06-09</h2>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li><strong>install.sh 静默失败根因修复</strong>：当 <code>proxy.js</code> 被 <code>git checkout</code> 还原为占位符版本时，sed 替换无失败检测，代理崩溃而脚本退出 0。新增"占位符缺失保护"——grep 检测到无占位符即中止并 exit 4</li>
+      <li><strong>占位符残留检查</strong>：sed 替换后必须 0 个 <code>__DS_KEY__</code> / <code>__MM_KEY__</code> / <code>__BD_KEY__</code> 残留（exit 5）</li>
+      <li><strong>--ccr-switch-on 参数支持</strong>：原 <code>install.sh</code> 完全不解析参数，新增 <code>--reinstall</code> / <code>--ccr-switch-on</code> / <code>--help</code> 支持</li>
+      <li><strong>start-only 模式</strong>：<code>--ccr-switch-on</code> 跳过全部安装步骤，仅启动代理（避免每次都跑 npm install -g）</li>
+      <li><strong>proxy.js 误还原防护</strong>：<code>proxy.js</code> / <code>proxy.js.bak.*</code> 加入 <code>.gitignore</code>，防止 <code>git checkout</code> 覆盖已替换的真 key 版本</li>
+    </ul>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li><strong>systemd 服务化</strong>：<code>scripts/ccr-switch.service</code> 由 <code>install.sh</code> 部署到 <code>/etc/systemd/system/</code> 并 enable。服务器重启后由 systemd 自动拉起 ccr-switch（不再依赖 cron <code>@reboot</code>，解决了阿里云服务器强制重启后 ccr-switch 没启动的问题）</li>
+      <li><code>tests/install-placeholder-safety.sh</code>：6 个 TDD 测试守护 install.sh 的安全行为，防止静默回归</li>
+    </ul>
+
     <!-- v1.3.0 -->
     <h2 id="v1.3.0">v1.3.0 — 2026-06-09</h2>
 
