@@ -50,7 +50,21 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v1.3.2 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v1.3.3 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+
+    <!-- v1.3.3 -->
+    <h2 id="v1.3.3">v1.3.3 — 2026-06-09</h2>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li><strong>install.sh 静默失败兜底</strong>：<code>proxy.js</code> 启动期新增占位符守卫 <code>sanityCheckPlaceholder</code>，若 <code>install.sh</code> 失败或未运行导致 <code>__DS_KEY__</code> / <code>__MM_KEY__</code> / <code>__BD_KEY__</code> 残留，立即 <code>process.exit(1)</code> 拒收并输出 FATAL 日志。修复 <code>git checkout</code> 还原占位符版本后代理用 <code>__DS_KEY__</code> 当 key → 401 风暴根因</li>
+    </ul>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li><strong>守卫反自引用</strong>：守卫代码用 <code>'__' + p + '_KEY__'</code> 动态拼接匹配串，避免在源文件里字面包含被检查的字面量 → 自引用误判</li>
+      <li><code>tests/test-placeholder-guard.js</code>：4 项 TDD 测试守护 v1.3.3，包含反自引用 + 占位符版本拒启动 + IIFE 存在 + PROVIDERS 占位符</li>
+    </ul>
 
     <!-- v1.3.2 -->
     <h2 id="v1.3.2">v1.3.2 — 2026-06-09</h2>

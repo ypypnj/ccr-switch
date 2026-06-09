@@ -1,4 +1,4 @@
-# ccr-switch v1.3.1
+# ccr-switch v1.3.3
 
 Multi-provider model switching for Claude Code. DeepSeek V4 Pro / V4 Flash + MiniMax M3 + Baidu Qianfan GLM-5.1.
 
@@ -89,6 +89,7 @@ Chinese comma ( ，) auto-normalized to ASCII comma.
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-06-09 | v1.3.3 | 启动期占位符守卫（防止 install.sh 静默失败导致代理用占位符 key 启动 → 401 风暴） |
 | 2026-06-09 | v1.3.2 | 修复 429 风暴导致进程退出根因（4 层 socket 错误监听 + 进程异常兜底 + coolDown）+ log rotate 5MB |
 | 2026-06-09 | v1.3.0 | Baidu Qianfan GLM-5.1 + 直连/代理切换脚本（ccr-switch-off/on）+ 安全改造（真 key 移出仓库） |
 | 2026-06-07 | v1.2.0 | MiniMax M2.7 → M3 替换，M3 默认启用 extended thinking |

@@ -333,4 +333,14 @@ var server = http.createServer(function(req, res) {
     res.writeHead(404); res.end('Not found');
   }
 });
+// 启动期占位符检查 (v1.3.3):阻止占位符 key 启动,防止 install.sh 静默失败
+// 动态拼接匹配串,避免守卫代码在源文件里自引用字面量
+(function sanityCheckPlaceholder() {
+  var src = require('fs').readFileSync(__filename, 'utf8');
+  var bad = ['DS','MM','BD'].filter(function(p) { return src.indexOf('__' + p + '_KEY__') >= 0; });
+  if (bad.length) {
+    console.error('FATAL proxy.js 仍含占位符 ' + bad.join(',') + ',install.sh 未运行或 sed 替换失败。退出 1 拒绝启动。');
+    process.exit(1);
+  }
+})();
 server.listen(PORT, '127.0.0.1', function() { log('STARTED v5 on 127.0.0.1:' + PORT); });
