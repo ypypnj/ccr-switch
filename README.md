@@ -89,6 +89,7 @@ Chinese comma ( ，) auto-normalized to ASCII comma.
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-06-09 | v1.3.2 | 修复 429 风暴导致进程退出根因（4 层 socket 错误监听 + 进程异常兜底 + coolDown）+ log rotate 5MB |
 | 2026-06-09 | v1.3.0 | Baidu Qianfan GLM-5.1 + 直连/代理切换脚本（ccr-switch-off/on）+ 安全改造（真 key 移出仓库） |
 | 2026-06-07 | v1.2.0 | MiniMax M2.7 → M3 替换，M3 默认启用 extended thinking |
 | 2026-05-30 | v1.1.0 | 修复 content-length 重新计算，Chinese comma 兼容 |
