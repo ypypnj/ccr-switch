@@ -1,6 +1,8 @@
-# CCR Switch — Multi-Provider Model Switching for Claude Code
+# CCR Switch — Multi-Provider Model Switching for Claude Code (v2.0.0 独立路由)
 
-Configures [Claude Code Router (CCR)](https://github.com/musistudio/claude-code-router) v2.0.0 to route Claude Code requests through **DeepSeek** (V4 Pro / V4 Flash) and **MiniMax** (M3), with full **deep reasoning (thinking) support** on DeepSeek V4 Pro and MiniMax M3.
+**v2.0.0 重大变更**: ccr-switch 拥有完整独立路由引擎,不再依赖 [Claude Code Router (CCR)](https://github.com/musistudio/claude-code-router) npm 全局包。`proxy.js` 直接路由到 DeepSeek / MiniMax / 百度千帆 GLM-5.1,**0 转发层、0 npm 依赖、释放 2.9GB 磁盘**。
+
+支持的 provider: **DeepSeek** (V4 Pro / V4 Flash)、**MiniMax** (M3)、**百度千帆** (GLM-5.1),full **deep reasoning (thinking) support** on V4 Pro / M3 / GLM-5.1。
 
 ---
 

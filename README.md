@@ -1,97 +1,74 @@
-# ccr-switch v1.3.3
+# ccr-switch v2.0.0
 
-Multi-provider model switching for Claude Code. DeepSeek V4 Pro / V4 Flash + MiniMax M3 + Baidu Qianfan GLM-5.1.
+Multi-provider model switching for [Claude Code](https://claude.ai/code).
+
+**DeepSeek V4 Pro / V4 Flash + MiniMax M2.7**, all via Anthropic-compatible endpoints with native thinking.
 
 ## Architecture
 
-```
-Claude Code  --http-->  proxy.js (127.0.0.1:3456)
-                             |
-              +--------------+--------------+--------------+
-              |              |              |              |
-      DeepSeek V4 Pro  DeepSeek V4 Flash  MiniMax M3  Baidu GLM-5.1
-      (ds,v4pro)       (ds,v4flash)       (mm,m3)      (bd,glm5.1)
-```
 
-Standalone ~270 line Node.js proxy. Zero external dependencies.
+
+- **v2.0.0**: Standalone ~200 line Node.js proxy — no external dependencies beyond Node.js built-ins
+- Replaces the previous ccr-based architecture which broke after Claude Code v2.1.153 changes
+- Handles Claude Code v2.1.156 format compatibility (system role in messages, adaptive thinking)
 
 ## Quick Start
 
-```bash
-git clone https://github.com/ypypnj/ccr-switch.git
-cd ccr-switch
-bash install.sh   # 自动配置 credentials / 部署 ccr-switch-off/on / 启动代理
-```
+[?1049h[?1h=[1;24r[23m[24m[0m[H[J[?25l[24;1H"proxy.js" [New][2;1H[1m[34m~                                                                               [3;1H~                                                                               [4;1H~                                                                               [5;1H~                                                                               [6;1H~                                                                               [7;1H~                                                                               [8;1H~                                                                               [9;1H~                                                                               [10;1H~                                                                               [11;1H~                                                                               [12;1H~                                                                               [13;1H~                                                                               [14;1H~                                                                               [15;1H~                                                                               [16;1H~                                                                               [17;1H~                                                                               [18;1H~                                                                               [19;1H~                                                                               [20;1H~                                                                               [21;1H~                                                                               [22;1H~                                                                               [23;1H~                                                                               [0m[24;63H0,0-1[9CAll[1;1H[34h[?25h[24;1H[?1l>[?1049lVim: Error reading input, exiting...
+Vim: Finished.
+[24;1H
+
+Add the env vars to  for persistence. Add  crontab for auto-start on server restart.
 
 ## Models
 
-| Command | Provider | Model | Thinking |
-|---------|----------|-------|----------|
-| `/model ds,v4pro` | DeepSeek | V4 Pro | adaptive |
-| `/model ds,v4flash` | DeepSeek | V4 Flash | — |
-| `/model mm,m3` | MiniMax | M3 | enabled (32k budget) |
-| `/model bd,glm5.1` | Baidu Qianfan | GLM-5.1 | enabled (8k budget) |
+| Model | Route | Use | Thinking |
+|---|---|---|---|
+|  | default, think | Deep reasoning | Converted adaptive→enabled |
+|  | background | Fast / background tasks | Stripped (not supported) |
+|  | Manual switch | Long docs, plugins | Native |
 
-Chinese comma ( ，) auto-normalized to ASCII comma.
+## Dynamic Model Switching
 
-## 代理 ⇄ 直连 切换
+ works within the same conversation — no need to restart tmux or Claude Code.
 
-| 命令 | 效果 |
-|------|------|
-| `ccr-switch-on` | 启动 proxy.js，改 .bashrc 切回 ccr 端点（默认） |
-| `ccr-switch-off ds` | 停 proxy.js，改 .bashrc 直连 DeepSeek V4 Pro |
-| `ccr-switch-off mm` | 停 proxy.js，改 .bashrc 直连 MiniMax M3 |
-| `ccr-switch-off bd` | 停 proxy.js，改 .bashrc 直连 Baidu Qianfan GLM-5.1 |
-| `ccr-switch-off custom` | 停 proxy.js，交互输入 base_url / api_key / model 直连任意上游 |
-| `ccr-switch-off` | 显示菜单交互选择 |
+## Format Fixes
 
-切换后**必须关闭 Claude Code session → `source ~/.bashrc` → 重启 claude** 才能生效（脚本会提示当前运行的 claude PID）。
+The proxy handles three Claude Code v2.1.156 incompatibilities with DeepSeek's Anthropic endpoint:
 
-## 凭据管理
+| Fix | Description |
+|-----|-------------|
+| System role | Moves  from messages array to top-level  field |
+| Adaptive thinking | Converts  →  |
+| Flash thinking | Strips thinking entirely for flash/haiku models |
+| Signature replacement | Replaces DeepSeek-specific signatures with generic ones |
+| Thinking block cache | Caches thinking blocks from responses and re-injects them into subsequent requests |
 
-- 真 key 存储于 `~/.claude/dev-flow/credentials.json`（chmod 600，**不入 git**）
-- 文件结构：`{ "ds_key": "...", "mm_key": "...", "bd_key": "..." }`
-- 仓库内只有占位符 `__DS_KEY__` / `__MM_KEY__` / `__BD_KEY__`
-- `install.sh` 首次运行会交互提示缺失的 key；之后可手动编辑该文件
-- 重新部署：`bash install.sh`（会保留已有 key，不会重复询问）
+## Thinking Block Cache
 
-## What the Proxy Does
+DeepSeek's Anthropic endpoint requires thinking blocks to be preserved and passed back in multi-turn conversations. Claude Code v2.1.156 strips these blocks when building subsequent requests.
 
-| Fix | Why |
-|-----|-----|
-| System role → top-level | Claude Code v2.1.156 put system in messages (no-op safety net) |
-| Chinese comma fix | `/model` input may use Chinese comma |
-| /v1/models endpoint | Required for `/model` command validation |
-| M3 thinking auto-enable | MiniMax M3 默认启用 extended thinking（budget_tokens=32000） |
-| GLM-5.1 thinking auto-enable | 保守启用（budget_tokens=8000） |
-| Provider routing | `ds,v4pro` / `ds,v4flash` / `mm,m3` / `bd,glm5.1` → 对应上游 |
+The proxy maintains a FIFO queue of thinking blocks extracted from streaming responses. When a subsequent request arrives with missing thinking blocks in assistant messages, the proxy re-injects them from the queue.
 
-## What the Proxy Does NOT Do
+### Token Cost
 
-- No thinking block caching or injection (streaming cache disabled)
-- No default effort override
-- No signature rewriting
+The injected thinking blocks are the REAL thinking content from DeepSeek's responses. They would be present in a correctly-functioning Anthropic API flow. The proxy only restores what Claude Code incorrectly strips — there is no additional token cost beyond normal thinking mode usage.
+
+### Reasoning Quality
+
+The cached blocks are DeepSeek's own chain-of-thought from previous turns. Passing them back is REQUIRED by DeepSeek's API for multi-turn reasoning continuity. Without them, the API returns HTTP 400. With them, the model can build on its previous reasoning.
 
 ## Files
 
-| File | Purpose | Git |
-|------|---------|-----|
-| proxy.js | Standalone proxy（占位符 key） | ✅ |
-| presets.json | 3 直连预设 + ccr 段（占位符 key） | ❌ git ignored |
-| presets.example.json | presets.json 模板 | ✅ |
-| install.sh | 9 步安装/部署/凭据/启动 | ✅ |
-| scripts/ccr-switch-off | 切换到直连 | ✅ |
-| scripts/ccr-switch-on | 切回代理 | ✅ |
-| config.json / config.example.json | 旧 ccr 兼容（占位符 key） | ❌ / ✅ |
-| patch.js | 旧 ccr 兼容（已不跑） | ✅ |
+| File | Purpose |
+|---|---|
+|  | Standalone proxy — all logic in one file |
+|  | Legacy ccr config (no longer used) |
+|  | Legacy ccr patches (no longer used) |
+|  | Legacy ccr installer (no longer used) |
+|  | Env vars template |
+|  | This file |
 
-## 版本历史
+## License
 
-| 日期 | 版本 | 变更 |
-|------|------|------|
-| 2026-06-09 | v1.3.3 | 启动期占位符守卫（防止 install.sh 静默失败导致代理用占位符 key 启动 → 401 风暴） |
-| 2026-06-09 | v1.3.2 | 修复 429 风暴导致进程退出根因（4 层 socket 错误监听 + 进程异常兜底 + coolDown）+ log rotate 5MB |
-| 2026-06-09 | v1.3.0 | Baidu Qianfan GLM-5.1 + 直连/代理切换脚本（ccr-switch-off/on）+ 安全改造（真 key 移出仓库） |
-| 2026-06-07 | v1.2.0 | MiniMax M2.7 → M3 替换，M3 默认启用 extended thinking |
-| 2026-05-30 | v1.1.0 | 修复 content-length 重新计算，Chinese comma 兼容 |
-| 2026-05-26 | v1.0.0 | 初始版本，DeepSeek V4 Pro/Flash + MiniMax M2.7 |
+MIT

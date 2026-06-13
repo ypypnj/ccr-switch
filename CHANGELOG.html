@@ -50,7 +50,45 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v1.3.3 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-09</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.0.0 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-13</p>
+
+    <!-- v2.0.0 -->
+    <h2 id="v2.0.0">v2.0.0 — 2026-06-13</h2>
+
+    <h3><span class="badge badge-breaking">Breaking</span></h3>
+    <ul>
+      <li><strong>删除 <code>claude-code-router</code> 依赖</strong>：v2.0.0 起 <code>proxy.js</code> 是完整独立路由引擎,不再调用 ccr-router(实际 v1.3.0 起就未走 ccr-router 转发,只是 install.sh 仍安装它)。释放 <code>~/.claude-code-router/</code> 2.9GB 磁盘</li>
+      <li><strong>install.sh 步骤 1 删除</strong>：<code>npm install -g @musistudio/claude-code-router</code> 移除</li>
+      <li><strong>install.sh 步骤 2/3 删除</strong>：部署 <code>~/.claude-code-router/config.json</code> 和运行 <code>patch.js</code> 移除</li>
+      <li><strong>patch.js 整文件删除</strong>：原用于 patch ccr-router 二进制(已不需要)。功能 (短名展开 <code>v4pro→deepseek-v4-pro</code>) 已天然存在于 <code>proxy.js</code> 的 <code>resolveModel()</code></li>
+      <li><strong>ccr-switch-start 脚本删除</strong>：原用于启动 ccr-router,v2.0.0 后 systemd 单元直接拉起 <code>proxy.js</code> 即可</li>
+    </ul>
+
+    <h3><span class="badge badge-added">Added</span></h3>
+    <ul>
+      <li><strong><code>presets.json</code> 新增 <code>routes</code> 段</strong>：proxy.js 默认路由表真源(替代原 <code>~/.claude-code-router/config.json</code> 的 Router 段)。共 9 个 role: default / background / think / longContext / longContextThreshold / webSearch / doc / test / backgroundAlt</li>
+      <li><strong><code>scripts/ccr-switch-status</code> 新增</strong>：查看 ccr-switch 状态(PID、systemd、/health、.bashrc 模式),支持 <code>--json</code> 模式供脚本消费</li>
+    </ul>
+
+    <h3><span class="badge badge-changed">Changed</span></h3>
+    <ul>
+      <li>install.sh 头部注释完全重写,反映 v2.0.0 独立路由架构</li>
+      <li>install.sh 步骤 9: <code>ccr stop</code> 调用全部移除,改为 <code>fuser -k 3456/tcp</code> 直接释放端口</li>
+      <li>install.sh 步骤 1: 加 v2.0.0 提示——若 <code>~/.claude-code-router</code> 目录或 <code>ccr</code> 命令仍存在,打印手动清理命令</li>
+    </ul>
+
+    <h3><span class="badge badge-fixed">Fixed</span></h3>
+    <ul>
+      <li>修复"修 API key 需要重启 ccr-router + 重跑 install + 重启 systemd" 4 步冗长流程：v2.0.0 后只需 <code>bash install.sh --reinstall</code> 一条命令</li>
+      <li>修复"<code>npm upgrade @musistudio/claude-code-router</code> 后 patch.js 失效" 风险：v2.0.0 后不再 patch 任何外部二进制</li>
+    </ul>
+
+    <h3>迁移指引 (v1.3.x → v2.0.0)</h3>
+    <ol>
+      <li><code>git pull</code> 拉取 v2.0.0 源码</li>
+      <li><code>bash install.sh --reinstall</code> 自动备份旧 <code>proxy.js</code> → 重新部署 v2.0.0 → 重启 systemd</li>
+      <li>(可选)清理 ccr-router 残留：<code>npm uninstall -g @musistudio/claude-code-router && rm -rf ~/.claude-code-router && rm -f /usr/local/bin/ccr /usr/local/bin/ccr-switch-start</code></li>
+    </ol>
 
     <!-- v1.3.3 -->
     <h2 id="v1.3.3">v1.3.3 — 2026-06-09</h2>

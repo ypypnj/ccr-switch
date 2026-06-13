@@ -1,23 +1,17 @@
 #!/usr/bin/env bash
 #
-# install.sh — ccr-switch v1.3.0 一键安装脚本
+# install.sh — ccr-switch v2.0.0 一键安装脚本
 #
-# 功能:
-#   1. 安装/验证 @musistudio/claude-code-router
-#   2. 部署 config.json → ~/.claude-code-router/
-#   3. 运行 patch.js 修补 transformer (兼容旧架构,proxy.js 不依赖)
-#   4. 管理 ~/.claude/dev-flow/credentials.json (chmod 600,真 key 存储)
-#   5. 部署 presets.json (从 presets.example.json 复制) + proxy.js 占位符替换
-#   6. 部署 ccr-switch-off / ccr-switch-on 到 /usr/local/bin
-#   7. 追加 .bashrc 段 (与 ccr-switch-on 共享 marker 块)
-#   8. 启动 ccr-switch 代理
+# 功能 (v2.0.0 独立路由,不再依赖 claude-code-router):
+#   1. 部署 presets.json (从 presets.example.json 复制) + proxy.js 占位符替换
+#   2. 管理 ~/.claude/dev-flow/credentials.json (chmod 600,真 key 存储)
+#   3. 部署 ccr-switch-off / ccr-switch-on / ccr-switch-status 到 /usr/local/bin
+#   4. 追加 .bashrc 段 (与 ccr-switch-on 共享 marker 块)
+#   5. 启动 ccr-switch 代理 + 部署 systemd 服务
 #
-# 用法:
-#   bash install.sh
-#
-# v1.3.0 安全改造: 真 key 全部从 ~/.claude/dev-flow/credentials.json 读取,
-#                  不再硬编码于 proxy.js / presets.json 入库。
-#                  install.sh 首次运行会检测缺失的 key,提示用户输入。
+# v2.0.0 重大变更: ccr-switch 拥有完整独立路由引擎,不再依赖 @musistudio/claude-code-router。
+#                  原 npm 全局包 (~/.claude-code-router/, 2.9GB) 可手动删除,无功能影响。
+#                  patch.js (修补 ccr-router 二进制) 同步废弃,功能已并入 proxy.js。
 #
 # 用法:
 #   bash install.sh                    # 完整安装(默认)
@@ -25,8 +19,10 @@
 #   bash install.sh --ccr-switch-on    # 仅启动 ccr-switch 代理(不重装依赖)
 #   bash install.sh --help             # 显示帮助
 #
-# v1.3.1 修复: 增加参数解析 + 占位符缺失保护 + systemd 服务部署
-#                  防止 install.sh 静默替换成功 (用户报告的真实根因)
+# v2.0.0 历史:
+#   v1.3.0 安全改造: 真 key 全部从 ~/.claude/dev-flow/credentials.json 读取
+#   v1.3.1 修复: 增加参数解析 + 占位符缺失保护 + systemd 服务部署
+#   v2.0.0 重构: 删除 claude-code-router 依赖,proxy.js 升级为独立路由引擎
 #
 set -euo pipefail
 
@@ -71,9 +67,7 @@ if [[ "$MODE" == "start-only" ]]; then
   fi
   # 杀掉旧实例
   if pgrep -f "node.*proxy.js.*3456" >/dev/null 2>&1; then
-    info "停止旧 ccr 进程..."
-    ccr stop 2>/dev/null || true
-    sleep 1
+    info "停止旧 ccr-switch 进程..."
     fuser -k 3456/tcp 2>/dev/null || true
     sleep 1
   fi
@@ -97,50 +91,24 @@ if [[ "$MODE" == "start-only" ]]; then
   exit 0
 fi
 
-# ── 1. Install / verify CCR CLI ────────────────────────────────────────────
-info "检查 @musistudio/claude-code-router..."
-
-if command -v ccr &>/dev/null; then
-  ok "@musistudio/claude-code-router 已安装 (ccr $(ccr -v 2>/dev/null || echo '?'))"
-else
-  info "正在全局安装 @musistudio/claude-code-router..."
-  npm install -g "@musistudio/claude-code-router"
-  ok "安装完成"
-fi
-
-# ── 2. 部署 config.json ────────────────────────────────────────────────────
-CCR_DIR="${HOME}/.claude-code-router"
-mkdir -p "${CCR_DIR}"
-
-if [[ -f "${SCRIPT_DIR}/config.json" ]]; then
-  if [[ -f "${CCR_DIR}/config.json" ]]; then
-    cp "${CCR_DIR}/config.json" "${CCR_DIR}/config.json.bak.$(date +%s)"
-    warn "已备份旧 config.json"
-  fi
-  cp "${SCRIPT_DIR}/config.json" "${CCR_DIR}/config.json"
-  ok "Config 已复制到 ${CCR_DIR}/config.json"
-elif [[ -f "${SCRIPT_DIR}/config.example.json" ]]; then
-  if [[ -f "${CCR_DIR}/config.json" ]]; then
-    cp "${CCR_DIR}/config.json" "${CCR_DIR}/config.json.bak.$(date +%s)"
-    warn "已备份旧 config.json"
-  fi
-  cp "${SCRIPT_DIR}/config.example.json" "${CCR_DIR}/config.json"
-  warn "=============================================="
-  warn "  已使用 config.example.json 作为 config.json"
-  warn "  请用编辑器填入你的 API key:"
-  warn "  vim ${CCR_DIR}/config.json"
-  warn "=============================================="
-fi
-
-# ── 3. 修补 CCR transformers (兼容旧架构) ──────────────────────────────────
-if command -v node &>/dev/null; then
-  if [[ -f "${SCRIPT_DIR}/patch.js" ]]; then
-    info "运行 patch.js 修补 transformer..."
-    node "${SCRIPT_DIR}/patch.js" || warn "patch.js 运行失败(不影响 proxy.js,proxy.js 已独立)"
-  fi
-else
+# ── 1. 检查 Node.js 运行时 ─────────────────────────────────────────────────
+if ! command -v node &>/dev/null; then
   err "未找到 node,无法继续"
   exit 1
+fi
+ok "Node.js 已就绪 ($(node -v))"
+
+# ── v2.0.0 提示: claude-code-router 依赖检查 ────────────────────────────────
+# proxy.js 已经是独立路由引擎,不再需要 @musistudio/claude-code-router。
+# 如果 ~/.claude-code-router 仍存在(历史遗留),不影响功能但占用 2.9GB,
+# 建议手动清理: rm -rf ~/.claude-code-router && npm uninstall -g @musistudio/claude-code-router
+if [[ -d "${HOME}/.claude-code-router" ]] || command -v ccr &>/dev/null; then
+  warn "检测到历史遗留的 claude-code-router 目录/CLI (ccr-switch v2.0.0 已不再需要)"
+  warn "如需清理(可选):"
+  warn "  npm uninstall -g @musistudio/claude-code-router"
+  warn "  rm -rf ~/.claude-code-router"
+  warn "  rm -f /usr/local/bin/ccr"
+  warn "  rm -f /usr/local/bin/ccr-switch-start"
 fi
 
 # ── 4. 部署 presets.json (从模板复制) ─────────────────────────────────────
@@ -262,10 +230,10 @@ if [[ -f "${SCRIPT_DIR}/proxy.js" ]]; then
 fi
 
 # ── 7. 部署 ccr-switch-off / ccr-switch-on 到 /usr/local/bin ──────────────
-info "部署 ccr-switch-off / ccr-switch-on..."
+info "部署 ccr-switch-off / ccr-switch-on / ccr-switch-status..."
 SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
 if [[ -d "${SCRIPTS_DIR}" ]]; then
-  for s in ccr-switch-off ccr-switch-on; do
+  for s in ccr-switch-off ccr-switch-on ccr-switch-status; do
     src="${SCRIPTS_DIR}/${s}"
     dst="/usr/local/bin/${s}"
     if [[ -f "$src" ]]; then
@@ -304,15 +272,13 @@ fi
 info "启动 ccr-switch 代理..."
 
 # 杀掉旧 proxy.js(它仍依赖被替换的 mm key,必须重启)
-if pgrep -f "node.*proxy.js.*3456" > /dev/null 2>&1 || pgrep -f "claude-code-router" > /dev/null 2>&1; then
-  info "停止旧 ccr 进程..."
-  ccr stop 2>/dev/null || true
-  sleep 1
+if pgrep -f "node.*proxy.js.*3456" > /dev/null 2>&1; then
+  info "停止旧 ccr-switch 进程..."
   fuser -k 3456/tcp 2>/dev/null || true
   sleep 1
 fi
 
-# 直接启动 proxy.js(本机安装模式,不走 ccr cli)
+# 直接启动 proxy.js(v2.0.0 独立路由,不走任何 ccr cli)
 nohup node "${SCRIPT_DIR}/proxy.js" 3456 > /tmp/proxy.log 2>&1 &
 sleep 2
 
@@ -340,7 +306,7 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║              ccr-switch v1.3.0 安装完成!                   ║${NC}"
+echo -e "${GREEN}║              ccr-switch v2.0.0 安装完成!                   ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}代理端点:${NC}  http://127.0.0.1:3456"
