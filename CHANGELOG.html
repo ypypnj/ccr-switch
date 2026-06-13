@@ -50,7 +50,17 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v2.0.0 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-13</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.0.1 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-13</p>
+
+    <!-- v2.0.1 -->
+    <h2 id="v2.0.1">v2.0.1 — 2026-06-13</h2>
+
+    <h3><span class="badge badge-changed">Changed</span></h3>
+    <ul>
+      <li><strong>SKILL.md 整体重写</strong>（107 行 → 180 行）:反映 v2.0.0 独立路由引擎的实际行为。新增 frontmatter <code>version: 2.0.0</code> 字段;加"核心概念"章节（短名格式 / 路由表真源 / API key 真源 / 占位符 / 进程管理）;加"命令"章节（<code>ccr-switch-on/off/status</code>）;加"模型路由"章节（短名解析 + 角色路由 + thinking 支持）;加"故障排除"章节（401 / 占位符守卫 / 429 / 健康检查）;加"安全" + "卸载" 章节</li>
+      <li><strong>删除残留 ccr-router 概念</strong>:原"Patches Applied by patch.js"章节删除（patch.js 已废弃）;原"Model name errors / Restore original CCR" 故障排除段重写为 v2.0.0 视角</li>
+      <li><strong>Provider 表扩展</strong>:thinking 字段加 ⚠️ 标注（<code>bd,glm5.1</code> 未端到端验证）;加 <code>API Base</code> 列（每个 provider 的 Anthropic 兼容端点）</li>
+    </ul>
 
     <!-- v2.0.0 -->
     <h2 id="v2.0.0">v2.0.0 — 2026-06-13</h2>

@@ -72,3 +72,10 @@ The cached blocks are DeepSeek's own chain-of-thought from previous turns. Passi
 ## License
 
 MIT
+
+## 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 2.0.1 | 2026-06-13 | **PATCH 文档同步**: SKILL.md 整体重写反映 v2.0.0 独立路由引擎实际行为;加 frontmatter `version`;加命令/路由/故障排除/安全/卸载 5 章节;删除 patch.js 残留 |
+| 2.0.0 | 2026-06-13 | **MAJOR 解耦**: 删除 `claude-code-router` 依赖(释放 2.9GB);`proxy.js` 升级为 v6 独立路由引擎;`presets.json` 加 `routes` 段;新增 `ccr-switch-status` 命令;`patch.js` + `ccr-switch-start` 整文件删除;`install.sh` 9 步精简(删除 npm install / config 部署 / patch 步骤) |
