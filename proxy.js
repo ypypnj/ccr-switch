@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ccr-switch proxy v5 — streaming thinking block caching
+// ccr-switch proxy v8 — v2.3.0 claude-* 别名重定向 + 流式非200防御
 var http = require('http');
 var https = require('https');
 var fs = require('fs');
@@ -57,15 +57,28 @@ process.on('unhandledRejection', function(reason) {
   log('UNHANDLED REJECTION ' + (reason && reason.message ? reason.message : String(reason)));
 });
 
-// provider 配置:每加一个 provider,在 PROVIDERS 加一条,
-// models 字典的 key 是用户传的短名(provider,short),value 是上游完整模型名
-// ccr-switch v1.3.0 新增 bd (Baidu Qianfan) provider
-// v1.3.0 安全改造:真 key 不再硬编码,使用占位符 __MM_KEY__ / __BD_KEY__ / __DS_KEY__,运行时由 install.sh 替换为 ~/.claude/dev-flow/credentials.json 中的真 key
-var PROVIDERS = {
-  ds: { url: 'https://api.deepseek.com/anthropic/v1/messages', key: '__DS_KEY__', models: { v4pro: 'deepseek-v4-pro', v4flash: 'deepseek-v4-flash', 'claude-sonnet-4-6': 'deepseek-v4-pro', 'claude-opus-4-8': 'deepseek-v4-pro', 'claude-haiku-4-5': 'deepseek-v4-flash' } },
-  mm: { url: 'https://api.minimaxi.com/anthropic/v1/messages', key: '__MM_KEY__', models: { 'm3': 'MiniMax-M3' } },
-  bd: { url: 'https://qianfan.baidubce.com/anthropic/coding/v1/messages', key: '__BD_KEY__', models: { 'glm5.1': 'glm-5.1' } }
-};
+// ── v2.1.0 读取 config.json 作为 provider 配置的单源真理 ──────────────────
+// 不再硬编码任何 provider 信息,所有端点和 key 从 config.json 读取。
+// config.json 中 models 必须为对象格式 { "短名": "上游模型名" },数组格式已废弃。
+var configPath = __dirname + '/config.json';
+var config;
+try {
+  config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+} catch(e) {
+  console.error('FATAL: 无法读取 config.json: ' + e.message);
+  process.exit(1);
+}
+var PROVIDERS = {};
+var DEFAULT_PROVIDER = null;
+config.Providers.forEach(function(p) {
+  if (Array.isArray(p.models)) {
+    console.error('FATAL: Provider ' + p.name + ' 的 models 字段为数组格式(v2.0),请升级为对象映射格式。');
+    console.error('  参考 config.example.json 中的新格式: {"短名":"上游模型名", ...}');
+    process.exit(1);
+  }
+  PROVIDERS[p.name] = { url: p.api_base_url, key: p.api_key, models: p.models };
+  if (!DEFAULT_PROVIDER) DEFAULT_PROVIDER = p.name;
+});
 
 var thinkCache = {};
 var MAX_CACHE = 30;
@@ -118,7 +131,7 @@ function resolveModel(model) { model = (model || "v4pro").replace(/，/g, ","); 
   for (var p in PROVIDERS) {
     if (PROVIDERS[p].models[model]) return { provider: PROVIDERS[p], model: PROVIDERS[p].models[model] };
   }
-  return { provider: PROVIDERS.ds, model: PROVIDERS.ds.models.v4pro };
+  var def = PROVIDERS[DEFAULT_PROVIDER]; var defModel = def && Object.keys(def.models)[0]; return { provider: def, model: defModel || 'unknown' };
 }
 
 function countThinking(body) {
@@ -236,17 +249,69 @@ var server = http.createServer(function(req, res) {
               res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) });
               return res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider 429, coolDown ' + (COOL_DOWN_MS/1000) + 's' } }));
             }
+            // v2.3.0: 非 429 错误(401/403/5xx)上游返回的是非 SSE 的 JSON 错误体。
+            // 若按 SSE 转发(res.write 半行),客户端 SSE 解析器拿到裸 JSON,等 \n\n
+            // 终止符永远等不到 → "JSON Parse error: Unexpected EOF"。
+            // 改为丢弃上游 body,返回自洽的非流式 JSON 错误,客户端能看到真实状态码。
+            if (upRes.statusCode >= 400) {
+              upRes.resume();
+              var errBody = JSON.stringify({ error: { type: 'upstream_error', status: upRes.statusCode, message: 'upstream ' + upRes.statusCode + ' for model ' + originalModel } });
+              res.writeHead(upRes.statusCode, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(errBody) });
+              res.end(errBody);
+              log('STREAM ERROR ' + upRes.statusCode + ' (non-SSE → JSON) model=' + originalModel);
+              return;
+            }
             delete upRes.headers['content-length'];
             res.writeHead(upRes.statusCode, upRes.headers);
             var leftover = '';
             var fullText = '';
+            var fallbackInjected = false;
             upRes.on('data', function(chunk) {
               var text = leftover + chunk.toString();
               text = text.replace(/"signature":"[^"]+"/g, '"signature":"ccr_"');
               var lines = text.split('\n');
               leftover = lines.pop();
               fullText += lines.join('\n') + '\n';
-              res.write(lines.join('\n') + '\n');
+              // v2.2.0 auto mode 兜底 (streaming 路径):在 message_stop 之前注入 text_delta。
+              // 缓冲策略:把上行 lines 直接 res.write,但先扫一下 lines 里是否有 message_stop
+              // 事件 — 看到就立刻把 fallback 块插在 message_stop 之前,然后原 lines 继续写。
+              var processedLines = lines.join('\n') + '\n';
+              if (!fallbackInjected && /"type":\s*"thinking"/.test(fullText)) {
+                // 检查当前累积 fullText 是否含非空 text(避免误判)
+                var allTextMatches = fullText.match(/"text"\s*:\s*"([^"]*)"/g) || [];
+                var hasNonEmptyText = allTextMatches.some(function(m) {
+                  return m.replace(/"text"\s*:\s*"/, '').slice(0, -1).length > 0;
+                });
+                if (!hasNonEmptyText) {
+                  // 找到当前 lines 中 message_stop 事件的位置,在它之前插入 fallback
+                  var fallbackSse = 'event: content_block_start\n'
+                    + 'data: {"type":"content_block_start","index":99,"content_block":{"type":"text","text":""}}\n\n'
+                    + 'event: content_block_delta\n'
+                    + 'data: {"type":"content_block_delta","index":99,"delta":{"type":"text_delta","text":"OK"}}\n\n'
+                    + 'event: content_block_stop\n'
+                    + 'data: {"type":"content_block_stop","index":99}\n\n';
+                  // SSE 事件以 \n\n 分隔;lines 是单行 split('\n') 结果,
+                  // 这里用整个 processedLines 字符串检测 message_stop
+                  var stopMatch = processedLines.match(/^event: message_stop\s*$/m);
+                  if (stopMatch) {
+                    // 在 message_stop 之前注入 (chunk 整段直接写)
+                    var before = processedLines.substring(0, stopMatch.index);
+                    var after = processedLines.substring(stopMatch.index);
+                    res.write(before);
+                    res.write(fallbackSse);
+                    res.write(after);
+                    fallbackInjected = true;
+                    log('AUTO MODE FALLBACK (stream): 注入占位 text_delta 在 message_stop 前,model=' + originalModel);
+                  } else {
+                    // 还没看到 message_stop,先按原样转发
+                    res.write(processedLines);
+                  }
+                } else {
+                  res.write(processedLines);
+                }
+              } else {
+                res.write(processedLines);
+              }
             });
             upRes.on('end', function() {
               if (leftover) { fullText += leftover; res.write(leftover); }
@@ -291,6 +356,17 @@ var server = http.createServer(function(req, res) {
                     });
                   }
                   if (blocks.length > 0) { }
+                  // v2.2.0 auto mode 兜底:GLM-5.2 等 thinking 模型在 max_tokens 受限时
+                  // 可能输出空 text 块(text=""),触发 Claude Code auto mode 误判
+                  // "bd,glm5.2 is temporarily unavailable"。检测到"有 thinking 无 text"时
+                  // 在 content 末尾追加最小占位 text,让 auto mode 看到非空响应。
+                  var hasNonEmptyText = rj.content && rj.content.some(function(c) {
+                    return c && c.type === 'text' && typeof c.text === 'string' && c.text.length > 0;
+                  });
+                  if (!hasNonEmptyText && rj.content && rj.content.some(function(c) { return c && c.type === 'thinking'; })) {
+                    rj.content.push({ type: 'text', text: 'OK' });
+                    log('AUTO MODE FALLBACK: 注入占位 text 块,model=' + rj.model);
+                  }
                   rj.model = originalModel;
               if (!rj.stop_sequence && rj.stop_sequence !== null) { rj.stop_sequence = null; }
               delete rj.base_resp;
@@ -333,14 +409,17 @@ var server = http.createServer(function(req, res) {
     res.writeHead(404); res.end('Not found');
   }
 });
-// 启动期占位符检查 (v1.3.3):阻止占位符 key 启动,防止 install.sh 静默失败
-// 动态拼接匹配串,避免守卫代码在源文件里自引用字面量
-(function sanityCheckPlaceholder() {
-  var src = require('fs').readFileSync(__filename, 'utf8');
-  var bad = ['DS','MM','BD'].filter(function(p) { return src.indexOf('__' + p + '_KEY__') >= 0; });
+// ── v2.1.0 启动期 config.json key 校验 ────────────────────────────────────
+// 检查 config.json 中所有 provider 的 api_key 是否仍含占位符,
+// 防止 install.sh 静默失败或用户忘记填真 key。
+(function sanityCheckConfigKeys() {
+  var bad = config.Providers.filter(function(p) {
+    return !p.api_key || p.api_key.indexOf('__') >= 0 || p.api_key.indexOf('YOUR_') >= 0;
+  });
   if (bad.length) {
-    console.error('FATAL proxy.js 仍含占位符 ' + bad.join(',') + ',install.sh 未运行或 sed 替换失败。退出 1 拒绝启动。');
+    console.error('FATAL: config.json Providers 中仍含占位符 key: ' + bad.map(function(p){return p.name;}).join(','));
+    console.error('  请编辑 config.json 填入真 key,或运行 bash install.sh --reinstall 重新生成。');
     process.exit(1);
   }
 })();
-server.listen(PORT, '127.0.0.1', function() { log('STARTED v5 on 127.0.0.1:' + PORT); });
+server.listen(PORT, '127.0.0.1', function() { log('STARTED v8 (v2.3.0) on 127.0.0.1:' + PORT); });

@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
 #
-# install.sh — ccr-switch v2.0.0 一键安装脚本
+# install.sh — ccr-switch v2.1.0 一键安装脚本
 #
-# 功能 (v2.0.0 独立路由,不再依赖 claude-code-router):
-#   1. 部署 presets.json (从 presets.example.json 复制) + proxy.js 占位符替换
-#   2. 管理 ~/.claude/dev-flow/credentials.json (chmod 600,真 key 存储)
-#   3. 部署 ccr-switch-off / ccr-switch-on / ccr-switch-status 到 /usr/local/bin
-#   4. 追加 .bashrc 段 (与 ccr-switch-on 共享 marker 块)
-#   5. 启动 ccr-switch 代理 + 部署 systemd 服务
+# 功能 (v2.1.0 config.json 单源真理 + 全链路 glm5.2):
+#   1. 部署 presets.json (从 presets.example.json 复制)
+#   2. 部署 config.json (从 config.example.json 复制 + 注入真 key)
+#   3. 管理 ~/.claude/dev-flow/credentials.json (chmod 600,真 key 存储)
+#   4. 部署 ccr-switch-off / ccr-switch-on / ccr-switch-status 到 /usr/local/bin
+#   5. 追加 .bashrc 段 (与 ccr-switch-on 共享 marker 块)
+#   6. 启动 ccr-switch 代理 + 部署 systemd 服务
+#
+# v2.1.0 重大变更: proxy.js 不再硬编码 PROVIDERS,启动时从 config.json 读取。
+#                  所有 provider 配置(url / key / models)统一在 config.json 管理。
+#                  删除 sed 替换 proxy.js 占位符的逻辑(proxy.js 不再含占位符)。
+#                  默认 provider 升级为百度千帆 GLM-5.2(tokenplan/personal 端点)。
 #
 # v2.0.0 重大变更: ccr-switch 拥有完整独立路由引擎,不再依赖 @musistudio/claude-code-router。
 #                  原 npm 全局包 (~/.claude-code-router/, 2.9GB) 可手动删除,无功能影响。
-#                  patch.js (修补 ccr-router 二进制) 同步废弃,功能已并入 proxy.js。
 #
 # 用法:
 #   bash install.sh                    # 完整安装(默认)
-#   bash install.sh --reinstall        # 强制重新替换占位符并启动代理
+#   bash install.sh --reinstall        # 强制重新生成 config.json 并启动代理
 #   bash install.sh --ccr-switch-on    # 仅启动 ccr-switch 代理(不重装依赖)
 #   bash install.sh --help             # 显示帮助
 #
-# v2.0.0 历史:
+# v2.1.0 历史:
 #   v1.3.0 安全改造: 真 key 全部从 ~/.claude/dev-flow/credentials.json 读取
 #   v1.3.1 修复: 增加参数解析 + 占位符缺失保护 + systemd 服务部署
 #   v2.0.0 重构: 删除 claude-code-router 依赖,proxy.js 升级为独立路由引擎
+#   v2.1.0 重构: proxy.js 从 config.json 读 provider,删除硬编码 PROVIDERS + sed 占位符替换
+#   v2.1.0 升级: 默认 provider 增加百度千帆 GLM-5.2(tokenplan/personal 端点)
 #
 set -euo pipefail
 
@@ -191,42 +198,35 @@ prompt_for_key "bd_key" "请输入 Baidu Qianfan API key (bce-v3/...):"
 chmod 600 "${CREDS_FILE}"
 ok "credentials.json 已写入(权限 600)"
 
-# ── 6. 替换 proxy.js 中的占位符 ────────────────────────────────────────────
-if [[ -f "${SCRIPT_DIR}/proxy.js" ]]; then
-  # 占位符缺失保护 (v1.3.1): 如果 proxy.js 中没有占位符,可能是
-  # 已被替换过,或被 git checkout 还原为旧版硬编码 key 版
-  # 这种情况必须中止,而不是静默成功
-  if ! grep -qE '__DS_KEY__|__MM_KEY__|__BD_KEY__' "${SCRIPT_DIR}/proxy.js"; then
-    if grep -qE 'sk-cp-[A-Za-z0-9_-]{20,}|bce-v3/ALTAKSP|__DS_KEY_REDACTED__' "${SCRIPT_DIR}/proxy.js"; then
-      err "proxy.js 中已含真 key(无占位符),跳过替换"
-      err "如需重新部署,请备份现有真 key 后手动删除 proxy.js 再运行 install.sh"
-      err "或使用 --reinstall 强制模式"
-      [[ "$MODE" != "reinstall" ]] && exit 4
-      warn "--reinstall 模式:将备份并重新处理"
-    else
-      err "proxy.js 中既无占位符也无真 key,文件可能损坏"
-      err "请检查 git 状态: cd ${SCRIPT_DIR} && git status proxy.js"
-      exit 4
+# ── 6. v2.1.0 从 config.example.json 生成 config.json 并注入真 key ──────────
+# proxy.js 不再有占位符。所有 provider 配置走 config.json,真 key 从
+# ~/.claude/dev-flow/credentials.json 读,注入到 config.example.json 的占位符上。
+CONFIG_FILE="${SCRIPT_DIR}/config.json"
+CONFIG_EXAMPLE="${SCRIPT_DIR}/config.example.json"
+if [[ -f "${CONFIG_EXAMPLE}" ]]; then
+  # 若 config.json 已有真 key 且非 --reinstall,备份以防覆盖丢失
+  if [[ -f "${CONFIG_FILE}" && "$MODE" != "reinstall" ]]; then
+    if grep -qE 'sk-YOUR_|bce-v3-YOUR_' "${CONFIG_FILE}" 2>/dev/null; then
+      : # 还是占位符模式,允许覆盖
+    elif grep -qE '^[^"]*"api_key":\s*"(sk-[A-Za-z0-9_-]{15,}|bce-v3/[A-Za-z0-9_-]{15,})' "${CONFIG_FILE}"; then
+      info "config.json 已含真 key,跳过生成(用 --reinstall 强制)"
     fi
   fi
 
-  info "替换 proxy.js 中的占位符为真 key..."
-  cp "${SCRIPT_DIR}/proxy.js" "${SCRIPT_DIR}/proxy.js.bak.$(date +%s)"
-  tmp=$(mktemp)
-  sed -e "s|__DS_KEY__|${CREDS[ds_key]:-__DS_KEY_MISSING__}|g" \
-      -e "s|__MM_KEY__|${CREDS[mm_key]:-__MM_KEY_MISSING__}|g" \
-      -e "s|__BD_KEY__|${CREDS[bd_key]:-__BD_KEY_MISSING__}|g" \
-      "${SCRIPT_DIR}/proxy.js" > "$tmp"
-  mv "$tmp" "${SCRIPT_DIR}/proxy.js"
-  chmod 600 "${SCRIPT_DIR}/proxy.js"
-
-  # 占位符残留检查:替换后必须 0 个占位符
-  if grep -qE '__DS_KEY__|__MM_KEY__|__BD_KEY__' "${SCRIPT_DIR}/proxy.js"; then
-    err "替换后仍有占位符残留,可能 credentials.json 中 key 包含特殊字符"
-    err "请检查 ~/.claude/dev-flow/credentials.json 内容"
-    exit 5
+  cp "${CONFIG_EXAMPLE}" "${CONFIG_FILE}.bak.$(date +%s)" 2>/dev/null || true
+  cp "${CONFIG_EXAMPLE}" "${CONFIG_FILE}"
+  # 注入真 key
+  if [[ -n "${CREDS[ds_key]:-}" ]]; then
+    sed -i "s|sk-YOUR_DEEPSEEK_API_KEY|${CREDS[ds_key]}|g" "${CONFIG_FILE}"
   fi
-  ok "proxy.js 已替换占位符(权限 600,占位符已全部清空)"
+  if [[ -n "${CREDS[mm_key]:-}" ]]; then
+    sed -i "s|sk-YOUR_MINIMAX_API_KEY|${CREDS[mm_key]}|g" "${CONFIG_FILE}"
+  fi
+  if [[ -n "${CREDS[bd_key]:-}" ]]; then
+    sed -i "s|bce-v3-YOUR_BAIDU_QIANFAN_KEY|${CREDS[bd_key]}|g" "${CONFIG_FILE}"
+  fi
+  chmod 600 "${CONFIG_FILE}"
+  ok "config.json 已生成(权限 600,真 key 已注入)"
 fi
 
 # ── 7. 部署 ccr-switch-off / ccr-switch-on 到 /usr/local/bin ──────────────
@@ -278,7 +278,7 @@ if pgrep -f "node.*proxy.js.*3456" > /dev/null 2>&1; then
   sleep 1
 fi
 
-# 直接启动 proxy.js(v2.0.0 独立路由,不走任何 ccr cli)
+# 直接启动 proxy.js(v2.1.0 独立路由 + config.json 驱动,不走任何 ccr cli)
 nohup node "${SCRIPT_DIR}/proxy.js" 3456 > /tmp/proxy.log 2>&1 &
 sleep 2
 
@@ -306,7 +306,7 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║              ccr-switch v2.0.0 安装完成!                   ║${NC}"
+echo -e "${GREEN}║              ccr-switch v2.1.0 安装完成!                   ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}代理端点:${NC}  http://127.0.0.1:3456"
@@ -315,12 +315,12 @@ echo -e "  ${CYAN}可用别名:${NC}"
 echo -e "    /model ds,v4pro     DeepSeek V4 Pro    (默认, 思考, web)"
 echo -e "    /model ds,v4flash   DeepSeek V4 Flash  (后台任务)"
 echo -e "    /model mm,m3        MiniMax M3         (测试/文档/提交)"
-echo -e "    /model bd,glm5.1    Baidu Qianfan GLM-5.1 (测试/文档/提交)"
+echo -e "    /model bd,glm5.2    Baidu Qianfan GLM-5.2 (测试/文档/提交)"
 echo ""
 echo -e "  ${CYAN}代理 ↔ 直连切换:${NC}"
 echo -e "    ccr-switch-off [1/2/3/C]   关闭代理,切到直连"
 echo -e "    ccr-switch-on              恢复 ccr 代理"
-echo -e "    直连预设: [1] ds,v4pro  [2] mm,m3  [3] bd,glm5.1  [C] 自定义"
+echo -e "    直连预设: [1] ds,v4pro  [2] mm,m3  [3] bd,glm5.2  [C] 自定义"
 echo ""
 echo -e "  ${CYAN}凭据管理:${NC}"
 echo -e "    真 key 存储于 ~/.claude/dev-flow/credentials.json (chmod 600)"

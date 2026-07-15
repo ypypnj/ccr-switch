@@ -50,7 +50,79 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v2.0.1 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-06-13</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.3.0 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-15</p>
+
+    <!-- v2.3.0 -->
+    <h2 id="v2.3.0">v2.3.0 — 2026-07-15</h2>
+    <h3>核心变更</h3>
+    <ul>
+      <li><strong>claude-* 别名重定向到 GLM</strong>:Claude Code 的 sub-agent / auto mode classifier 内部用 <code>claude-opus-4-8</code> / <code>claude-sonnet-4-6</code> / <code>claude-haiku-4-5</code> 等 Claude 官方 model 名发请求(不受用户 <code>/model</code> 设置控制)。v2.2.x 时这些别名在 <code>config.json</code> 的 <code>ds.models</code> 里映射到 <code>deepseek-v4-pro</code>,当 ds key 失效(401)时 sub-agent 全部失败。v2.3.0 把 <code>claude-opus-4-8</code> / <code>claude-opus-4-7</code> / <code>claude-sonnet-5</code> / <code>claude-sonnet-4-6</code> / <code>claude-haiku-4-5</code> 从 <code>ds.models</code> 移到 <code>bd.models</code>,值改为 <code>glm-5.2</code>。sub-agent 直接走 GLM,不再依赖 ds</li>
+      <li><strong>流式非 200 防御</strong>(<code>proxy.js</code> streaming 分支):上游返回非 200(非 429)状态码时,上游响应是裸 JSON 错误体(非 SSE)。旧版把它当 SSE <code>res.write</code> 半行转发,客户端 SSE 解析器等不到 <code>\n\n</code> 终止符 → <code>JSON Parse error: Unexpected EOF</code>。v2.3.0 改为 <code>upRes.resume()</code> 丢弃上游 body,返回自洽的非流式 JSON 错误(<code>upstream_error</code> + 真实状态码 + <code>Content-Length</code>),客户端能看到真实状态码而非畸形 SSE。日志: <code>STREAM ERROR &lt;code&gt; (non-SSE → JSON)</code></li>
+    </ul>
+    <h3>故障修复</h3>
+    <ul>
+      <li><strong>修复 <code>API Error: JSON Parse error: Unexpected EOF</code></strong>:根因是 sub-agent 的 <code>claude-opus-4-8</code> 请求经 <code>ds.models</code> 解析到 <code>deepseek-v4-pro</code>,ds key 401 后上游裸 JSON 错误体被流式路径当 SSE 转发,产生畸形 SSE。Claude Code 把错误归到 user-facing model(如 <code>bd,glm5.2</code>)名下显示,造成"GLM 报 EOF"的误判。实测证据:<code>/tmp/proxy-debug.log</code> 中 <code>REQ model=claude-opus-4-8 ... SEND model=deepseek-v4-pro ... STREAM ERROR 401</code> 大量配对,而 <code>bd,glm5.2</code> 请求全是 <code>STREAM DONE</code>。修复后 <code>claude-opus-4-8 → SEND model=glm-5.2 → 200</code></li>
+    </ul>
+    <h3>同步更新</h3>
+    <ul>
+      <li><code>config.json</code> / <code>config.example.json</code>:<code>ds.models</code> 删除 3 个 claude-* 别名,<code>bd.models</code> 新增 5 个 claude-* 别名(opus-4-8 / opus-4-7 / sonnet-5 / sonnet-4-6 / haiku-4-5)→ <code>glm-5.2</code></li>
+      <li><code>proxy.js</code> 头部版本 <code>v2.2.0 → v2.3.0</code>,STARTED 日志同步</li>
+      <li><code>SKILL.md</code> 加 v2.3.0 增量说明 + "JSON Parse error: Unexpected EOF" 故障排除段</li>
+      <li><code>VERSION</code> 2.2.0 → 2.3.0</li>
+    </ul>
+    <p class="meta">无破坏性变更:ds / mm provider 接口未变;claude-* 别名改走 GLM 是行为修正(原先走失效的 ds 必然 401)。Router 段未改。</p>
+
+    <!-- v2.2.0 -->
+    <h2 id="v2.2.0">v2.2.0 — 2026-07-15</h2>
+    <h3>核心变更</h3>
+    <ul>
+      <li><strong>GLM-5.2 auto mode 兜底</strong>:GLM-5.2 是 thinking 模型,<code>max_tokens</code> 受限时倾向把所有 token 分配给思考,文本块输出空字符串 <code>{"text":""}</code>。Claude Code CLI 的 <code>auto mode</code> safety probe 要求非空 text 回复,看到空就误判"bd,glm5.2 is temporarily unavailable"。v2.2.0 在 proxy.js 响应处理阶段自动追加 <code>"OK"</code> 占位 text 块</li>
+      <li><strong>non-streaming 兜底</strong>(<code>proxy.js</code> L300+):检测 <code>seenThinking &amp;&amp; !hasNonEmptyText</code>,在 <code>rj.content</code> 末尾 push <code>{type: "text", text: "OK"}</code>。日志: <code>AUTO MODE FALLBACK: 注入占位 text 块</code></li>
+      <li><strong>streaming 兜底</strong>(<code>proxy.js</code> L243+):扫描累积 SSE 文本,看到 <code>event: message_stop</code> 时立即在它之前注入 3 个 SSE 事件(<code>content_block_start</code> / <code>content_block_delta</code> "OK" / <code>content_block_stop</code>,<code>index=99</code>)。保证 <code>message_stop</code> 之后不出现 content_block_*,严格遵循 Anthropic SSE 协议</li>
+    </ul>
+    <h3>诊断</h3>
+    <ul>
+      <li>proxy 日志新增 <code>AUTO MODE FALLBACK (stream): 注入占位 text_delta 在 message_stop 前</code>,可观察触发频次</li>
+      <li>影响范围:只对 <code>bd,glm5.2</code>(以及未来类似 thinking 模型)生效;<code>ds,v4pro</code> / <code>mm,m3</code> 本就输出非空 text,兜底逻辑不会触发</li>
+    </ul>
+    <p class="meta">无破坏性变更:v2.2.0 是 v2.1.0 的纯增量补丁,既有 provider 行为完全兼容。</p>
+
+    <!-- v2.1.0 -->
+
+    <!-- v2.1.0 -->
+    <h2 id="v2.1.0">v2.1.0 — 2026-07-14</h2>
+    <h3>核心变更</h3>
+    <ul>
+      <li><strong>proxy.js 从 config.json 读 PROVIDERS</strong>(去掉硬编码):v2.0.x 的 <code>proxy.js</code> 第 64-68 行 <code>PROVIDERS</code> 对象写死 ds/mm/bd 三家,新增/修改 provider 必须改源码。v2.1.0 删掉硬编码,启动时 <code>JSON.parse(fs.readFileSync('config.json'))</code> 读 <code>Providers[]</code>,运行时构建 PROVIDERS 字典。<code>config.json</code> 成为 provider 配置(<code>api_base_url</code> / <code>api_key</code> / <code>models</code>)的单源真理</li>
+      <li><strong>models 段从数组改为对象映射</strong>:v2.0 格式 <code>["glm5.2","glm-5.2"]</code> 无法表达"短名→上游模型名"映射。v2.1.0 改为 <code>{"glm5.2":"glm-5.2","glm-5.2":"glm-5.2"}</code>,proxy.js <code>resolveModel()</code> 直接对象 key 查询。Claude model aliases(<code>claude-sonnet-4-6</code> 等)从源码硬编码迁移到 ds.models</li>
+      <li><strong>新增百度千帆 GLM-5.2 provider</strong>:GLM-5.1 升级到 GLM-5.2,端点从 <code>/anthropic/coding</code>(订阅制 Coding Plan)切换到 <code>/anthropic/tokenplan/personal</code>(token 计费制),新 key 在 <code>~/.claude/dev-flow/credentials.json</code> 的 <code>bd_key</code> 字段</li>
+      <li><strong>install.sh 删除 sed 替换 proxy.js 占位符</strong>:v2.0.x 时 <code>proxy.js</code> 源码含 <code>__DS_KEY__</code> / <code>__MM_KEY__</code> / <code>__BD_KEY__</code> 占位符,install.sh 用 sed 注入真 key。v2.1.0 <code>proxy.js</code> 不再含占位符(0 sed 替换);改为从 <code>config.example.json</code> 复制 + 用真 key sed 替换 <code>config.json</code> 中的 <code>sk-YOUR_*</code> / <code>bce-v3-YOUR_*</code> 占位符</li>
+      <li><strong>占位符守卫重写</strong>:v1.3.3 守卫扫描 <code>proxy.js</code> 源文件查 <code>__DS_KEY__</code> 等字面量。v2.1.0 改为扫描 <code>config.json</code> 的 <code>Providers[].api_key</code> 字段,检测 <code>__</code> 或 <code>YOUR_</code> 子串,违规立即 <code>process.exit(1)</code></li>
+      <li><strong>新增 models 数组格式 FATAL 守卫</strong>:启动时若 <code>Providers[].models</code> 是数组(老 v2.0 格式),输出明确升级指引并 <code>exit(1)</code>,防止 v2.0→v2.1.0 配置迁移漏改</li>
+      <li><strong>resolveModel fallback 改为 defaultProvider</strong>:v2.0 fallback 到 <code>PROVIDERS.ds</code>(写死),v2.1.0 fallback 到 <code>config.json.Providers[0]</code>(第一个 provider),不再绑定 ds</li>
+    </ul>
+    <h3>故障修复</h3>
+    <ul>
+      <li><strong>修复 <code>/model bd,glm5.2</code> 实际跑在 deepseek-v4-pro</strong>:v2.0.x 时 <code>proxy.js</code> 硬编码 <code>bd.models = {glm5.1:'glm-5.1'}</code>,<code>resolveModel('bd,glm5.2')</code> 找不到 glm5.2 → fallback 到 PROVIDERS.ds → 用户在 Claude Code 设的 GLM-5.2 实际跑 deepseek。v2.1.0 修复后,SEND 日志显示 <code>SEND model=glm-5.2</code>,GLM-5.2 真响应 200</li>
+    </ul>
+    <h3>同步更新</h3>
+    <ul>
+      <li><code>config.json</code> 3 个 provider 的 models 全改对象格式,加 bd provider + glm5.2</li>
+      <li><code>config.example.json</code> 新增 bd provider,models 全改对象格式</li>
+      <li><code>presets.example.json</code> / <code>presets.json</code> bd 段 glm5.1→glm5.2,端点→<code>/anthropic/tokenplan/personal</code></li>
+      <li><code>install.sh</code> 头部版本说明 v2.0.0→v2.1.0,完成横幅 + 可用别名列表更新</li>
+      <li><code>SKILL.md</code> 整体重写,反映 config.json 单源真理架构 + GLM-5.2 验证</li>
+      <li><code>tests/test-429-backoff-and-rotate.js</code> <code>bd,glm5.1</code>→<code>bd,glm5.2</code></li>
+      <li><code>VERSION</code> 2.0.1→2.1.0</li>
+    </ul>
+    <h3>新增 provider 流程(v2.1.0 后)</h3>
+    <ol>
+      <li>编辑 <code>config.json</code> 的 <code>Providers[]</code> 加一段(name/api_base_url/api_key/models/transformer)</li>
+      <li>在 <code>Router</code> 加想挂的 role(可选)</li>
+      <li><code>pkill -f "proxy.js 3456" &amp;&amp; nohup node proxy.js 3456 &gt; /tmp/proxy.log 2&gt;&amp;1 &amp;</code> 重启代理</li>
+      <li><code>curl -sf http://127.0.0.1:3456/v1/models</code> 验证新 provider 出现</li>
+    </ol>
+    <p class="meta">无破坏性变更:ds / mm provider 接口未变,既有 <code>ds,v4pro</code> / <code>mm,m3</code> 调用方式完全兼容。</p>
 
     <!-- v2.0.1 -->
     <h2 id="v2.0.1">v2.0.1 — 2026-06-13</h2>

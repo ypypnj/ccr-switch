@@ -1,4 +1,5 @@
 config.json
+config.json.bak.*
 presets.json
 # proxy.js 含真 API key,在 install.sh 运行时被替换占位符
 # 加入 .gitignore 防止 git checkout 还原为占位符版本 (v1.3.1)

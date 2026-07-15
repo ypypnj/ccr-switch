@@ -1,4 +1,5 @@
 {
+  "_comment": "config.json 模板。复制为 config.json 后使用。api_key 字段填真 key,或保留占位符让 install.sh 通过 ~/.claude/dev-flow/credentials.json 注入。models 字段必须为对象格式 { \"短名\": \"上游模型名\" },数组格式已废弃(v2.1.0)。",
   "LOG": true,
   "LOG_LEVEL": "info",
   "API_TIMEOUT_MS": 600000,
@@ -7,12 +8,12 @@
       "name": "ds",
       "api_base_url": "https://api.deepseek.com/anthropic/v1/messages",
       "api_key": "sk-YOUR_DEEPSEEK_API_KEY",
-      "models": [
-        "v4pro",
-        "v4flash",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro"
-      ],
+      "models": {
+        "v4pro": "deepseek-v4-pro",
+        "v4flash": "deepseek-v4-flash",
+        "deepseek-v4-pro": "deepseek-v4-pro",
+        "deepseek-v4-flash": "deepseek-v4-flash"
+      },
       "transformer": {
         "use": [
           "Anthropic"
@@ -23,10 +24,29 @@
       "name": "mm",
       "api_base_url": "https://api.minimaxi.com/anthropic/v1/messages",
       "api_key": "sk-YOUR_MINIMAX_API_KEY",
-      "models": [
-        "m3",
-        "MiniMax-M3"
-      ],
+      "models": {
+        "m3": "MiniMax-M3",
+        "MiniMax-M3": "MiniMax-M3"
+      },
+      "transformer": {
+        "use": [
+          "Anthropic"
+        ]
+      }
+    },
+    {
+      "name": "bd",
+      "api_base_url": "https://qianfan.baidubce.com/anthropic/tokenplan/personal/v1/messages",
+      "api_key": "bce-v3-YOUR_BAIDU_QIANFAN_KEY",
+      "models": {
+        "glm5.2": "glm-5.2",
+        "glm-5.2": "glm-5.2",
+        "claude-opus-4-8": "glm-5.2",
+        "claude-opus-4-7": "glm-5.2",
+        "claude-sonnet-5": "glm-5.2",
+        "claude-sonnet-4-6": "glm-5.2",
+        "claude-haiku-4-5": "glm-5.2"
+      },
       "transformer": {
         "use": [
           "Anthropic"
@@ -38,10 +58,12 @@
     "default": "ds,v4pro",
     "background": "ds,v4flash",
     "think": "ds,v4pro",
-    "longContext": "mm,m3",
-    "longContextThreshold": 30000,
+    "longContext": "ds,v4pro",
+    "longContextThreshold": 200000,
     "webSearch": "ds,v4pro",
     "doc": "mm,m3",
-    "test": "mm,m3"
+    "test": "mm,m3",
+    "backgroundAlt": "ds,v4flash",
+    "glm": "bd,glm5.2"
   }
 }
