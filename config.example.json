@@ -52,6 +52,20 @@
           "Anthropic"
         ]
       }
+    },
+    {
+      "name": "xa",
+      "api_base_url": "https://cn.xapex.cc/v1/messages",
+      "api_key": "sk-YOUR_XAPEX_API_KEY",
+      "models": {
+        "gpt5.6": "gpt-5.6-sol",
+        "gpt-5.6-sol": "gpt-5.6-sol"
+      },
+      "transformer": {
+        "use": [
+          "Anthropic"
+        ]
+      }
     }
   ],
   "Router": {

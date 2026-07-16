@@ -77,5 +77,9 @@ MIT
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.4.0 | 2026-07-16 | **MINOR 新增 provider**: 新增 `xa,gpt5.6` (xapex.cn gpt-5.6-sol);`proxy.js` 加 `upRes.on('close')` 流式无声断连防御(v2.3.1) — GLM 高 thinking 请求偶发 socket 关闭时,补 `message_delta`(max_tokens)+ `message_stop` 截断结尾,消除客户端 `Unexpected EOF` |
+| 2.3.0 | 2026-07-15 | **FIX EOF 误判**: claude-* 子代理别名从 ds.models 移至 bd.models(避免 ds 401 时 sub-agent EOF);proxy.js 流式路径加非 200 防御,上游 401/5xx 返回自洽 JSON 而非半行 SSE |
+| 2.2.0 | 2026-07-15 | **FIX auto mode unavailable**: GLM-5.2 在 max_tokens 受限时输出空 text 触发 auto mode 误判;proxy.js 在响应末尾自动追加 `"OK"` 占位 text 块(streaming 在 `message_stop` 前注入) |
+| 2.1.0 | 2026-07-14 | **MAJOR 解耦硬编码**: proxy.js 不再硬编码 PROVIDERS;启动期从 `config.json` 读 url/key/models;启动期占位符守卫拒绝运行;models 数组格式 FATAL 退出 |
 | 2.0.1 | 2026-06-13 | **PATCH 文档同步**: SKILL.md 整体重写反映 v2.0.0 独立路由引擎实际行为;加 frontmatter `version`;加命令/路由/故障排除/安全/卸载 5 章节;删除 patch.js 残留 |
 | 2.0.0 | 2026-06-13 | **MAJOR 解耦**: 删除 `claude-code-router` 依赖(释放 2.9GB);`proxy.js` 升级为 v6 独立路由引擎;`presets.json` 加 `routes` 段;新增 `ccr-switch-status` 命令;`patch.js` + `ccr-switch-start` 整文件删除;`install.sh` 9 步精简(删除 npm install / config 部署 / patch 步骤) |

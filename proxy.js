@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ccr-switch proxy v8 — v2.3.0 claude-* 别名重定向 + 流式非200防御
+// ccr-switch proxy v8 — v2.3.1 流式无声断连防御 (补截断结尾)
 var http = require('http');
 var https = require('https');
 var fs = require('fs');
@@ -315,18 +315,39 @@ var server = http.createServer(function(req, res) {
             });
             upRes.on('end', function() {
               if (leftover) { fullText += leftover; res.write(leftover); }
-              res.end();
+              if (!res.writableEnded) res.end();
               // Extract thinking blocks from streaming response for caching
               if (upRes.statusCode === 200) {
                 var blocks = []; // parseSSEThinking disabled
                 if (blocks.length > 0) {
-                  log('STREAM DONE cached=' + blocks.length);
+                  log('STREAM DONE cached=' + blocks.length + ' bytes=' + fullText.length);
                 } else {
-                  log('STREAM DONE (no thinking blocks)');
+                  log('STREAM DONE (no thinking blocks) bytes=' + fullText.length);
                 }
               } else {
-                log('STREAM ERROR ' + upRes.statusCode);
+                log('STREAM ERROR ' + upRes.statusCode + ' bytes=' + fullText.length);
               }
+            });
+            // v2.3.1: 上游无声断连防御 — GLM 在高 thinking 请求时偶发 socket 关闭,
+            // 但既不触发 'end' 也不触发 'error'(负载均衡切换 / SSL 重协商失败 / RST)。
+            // 不监听 'close' 的话 res 永远不结束 → 客户端 Unexpected EOF。
+            // 这里在 socket 真正关闭时兜底结束 res,并记日志确认根因。
+            // (若 'end' 已正常触发,'close' 随后到达时 streamFinished 守卫会跳过)
+            var streamFinished = false;
+            upRes.on('end', function() { streamFinished = true; });
+            upRes.on('close', function() {
+              if (streamFinished) return;
+              streamFinished = true;
+              if (!res.writableEnded) {
+                // 上游无声断连,SSE 不完整。补一个 max_tokens 截断结尾,
+                // 让客户端收到"完整但被截断"的响应,而不是 Unexpected EOF 硬错误。
+                try {
+                  res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":0}}\n\n');
+                  res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+                } catch(e) {}
+                res.end();
+              }
+              log('STREAM CLOSED EARLY (upstream socket closed, end not fired) model=' + originalModel + ' bytes=' + fullText.length);
             });
           } else {
             var respBody = '';
@@ -422,4 +443,4 @@ var server = http.createServer(function(req, res) {
     process.exit(1);
   }
 })();
-server.listen(PORT, '127.0.0.1', function() { log('STARTED v8 (v2.3.0) on 127.0.0.1:' + PORT); });
+server.listen(PORT, '127.0.0.1', function() { log('STARTED v8 (v2.3.1) on 127.0.0.1:' + PORT); });

@@ -1,10 +1,15 @@
 ---
 name: ccr-switch
-description: Multi-provider model routing for Claude Code (DeepSeek / MiniMax / 百度千帆 GLM-5.2)
-version: 2.3.0
+description: Multi-provider model routing for Claude Code (DeepSeek / MiniMax / 百度千帆 GLM-5.2 / xapex gpt-5.6-sol)
+version: 2.4.0
 ---
 
-# CCR Switch — Multi-Provider Model Routing for Claude Code (v2.3.0)
+# CCR Switch — Multi-Provider Model Routing for Claude Code (v2.4.0)
+
+**v2.4.0 增量变更**: 两项独立变更合并发布。
+
+1. **新增 `xa,gpt5.6` provider**:接入 xapex.cn 的 `gpt-5.6-sol` 上游模型(Anthropic Messages API 兼容)。只需改 `config.json`(`Providers[]` 加 `xa` 段),`proxy.js` 无任何改动 —— 这是 v2.1.0 "改 `config.json` 即可增 provider" 架构的再次验证。短名 `xa,gpt5.6` + 别名 `xa,gpt-5.6-sol`,非 thinking 模型,无注入/兜底。
+2. **流式无声断连防御**(v2.3.1 内置):GLM 在高 thinking 请求时偶发 socket 关闭但不触发 `end`/`error`(负载均衡切换 / SSL 重协商失败 / RST),旧版 res 悬挂 → 客户端 `Unexpected EOF`。v2.3.1 监听 `upRes.on('close')`,断连时补 `message_delta(stop_reason=max_tokens)` + `message_stop` 截断结尾,客户端收到"完整但被截断"响应而非 EOF 硬错误。
 
 **v2.3.0 增量变更**: 修复 Claude Code sub-agent 调用触发 `JSON Parse error: Unexpected EOF` 的根因。Claude Code 的 sub-agent / auto mode classifier 内部用 `claude-opus-4-8` / `claude-sonnet-4-6` / `claude-haiku-4-5` 等 Claude 官方 model 名发请求,这些别名之前在 `config.json` 的 `ds.models` 里映射到 `deepseek-v4-pro`。当 ds key 失效(401)时,上游返回裸 JSON 错误体,proxy 流式路径把它当 SSE 转发 → 客户端 SSE 解析器等不到 `\n\n` 终止符 → `Unexpected EOF`。v2.3.0 两层修复:
 
@@ -35,6 +40,7 @@ version: 2.3.0
 | DeepSeek | `ds,v4flash` | `deepseek-v4-flash` | `api.deepseek.com/anthropic` | N/A(fast mode) |
 | MiniMax | `mm,m3` | `MiniMax-M3` | `api.minimaxi.com/anthropic` | ✅ Extended(`budget_tokens=32000`,自动注入) |
 | 百度千帆 | `bd,glm5.2` | `glm-5.2` | `qianfan.baidubce.com/anthropic/tokenplan/personal` | ✅ Extended(原生) |
+| xapex | `xa,gpt5.6` | `gpt-5.6-sol` | `cn.xapex.cc/v1/messages` | N/A |
 
 ## 安装
 
@@ -98,6 +104,7 @@ bash /root/ese-project/ccr-switch/install.sh
 - **`ds,v4pro`**: 透传 `thinking` 块(round-trip 已在 proxy.js 内部处理,无需 ccr-router)
 - **`mm,m3`**: 自动注入 `thinking={type:enabled, budget_tokens:32000}`(proxy.js L203-205)
 - **`bd,glm5.2`**: 透传 `thinking` 块,GLM-5.2 原生支持(已在 v2.1.0 端到端验证)
+- **`xa,gpt5.6`**: 非 thinking 模型;proxy 透传 `thinking` 块(若上游不支持则忽略)
 
 ## config.json 结构
 
@@ -130,6 +137,8 @@ bash /root/ese-project/ccr-switch/install.sh
 1. 在 `Providers[]` 加一段(`name` / `api_base_url` / `api_key` / `models` / `transformer`)
 2. 在 `Router` 加你想挂的 role(可选)
 3. `pkill -f "proxy.js 3456" && node proxy.js 3456 &` 重启代理
+
+> **v2.4.0 新增 provider 验证**: `xa,gpt5.6` 是首个按上述步骤纯改 config 添加的 provider —— proxy.js 零改动即生效,验证了 v2.1.0 "单源真理" 架构的扩展性。
 
 ## 故障排除
 
