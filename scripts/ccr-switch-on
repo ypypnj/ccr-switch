@@ -177,6 +177,8 @@ if ! verify_pid_identity "$new_pid" "$new_start"; then
 fi
 
 # Step 5: 原子发布 PID 状态
+printf '%s %s\n' "$new_pid" "$new_start" >"$PID_STAGING"
+chmod 600 "$PID_STAGING"
 mv -f "$PID_STAGING" "$PID_FILE"
 trap - EXIT
 printf '[INFO] ccr-switch 已启动 (PID=%s start=%s)\n' "$new_pid" "$new_start"
