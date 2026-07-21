@@ -1,10 +1,12 @@
 ---
 name: ccr-switch
 description: Multi-provider model routing for Claude Code (DeepSeek / MiniMax / xapex gpt-5.6-sol)
-version: 2.4.1
+version: 2.4.2
 ---
 
-# CCR Switch -- Multi-Provider Model Routing for Claude Code (v2.4.1)
+# CCR Switch -- Multi-Provider Model Routing for Claude Code (v2.4.2)
+
+**v2.4.2 修复**: 代理通过健康检查和 PID 身份校验后，先将 `<pid> <start-time>` 写入 mode 0600 staging 文件，再原子发布 `proxy.pid`，避免启动成功后因 staging 文件缺失而失败。
 
 **v2.4.1 核心变更**: 完全由 `ModelBindings` 驱动的可核验模型委派。移除旧版 Router 角色路由，所有模型解析通过配置化的精确/通配符绑定完成。模型解析成功后每个响应携带 Dispatch Receipt 头部(unresolvable 模型不携带 receipt)，可独立验证路由决策。`ModelBindings` 可为空(`{}`)以支持纯显式路由。
 

@@ -50,7 +50,14 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v2.4.1 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-21</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.4.2 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-21</p>
+
+    <!-- v2.4.2 -->
+    <h2 id="v2.4.2">v2.4.2 — 2026-07-21</h2>
+    <h3>Fixed</h3>
+    <ul>
+      <li><strong>PID 状态原子发布</strong>: <code>ccr-switch-on</code> 在代理通过健康检查和 PID 身份校验后，将 <code>&lt;pid&gt; &lt;start-time&gt;</code> 写入 mode 0600 staging 文件，再原子移动为 <code>proxy.pid</code>。修复健康启动后因 staging 文件不存在而报错的问题</li>
+    </ul>
 
     <!-- v2.4.1 -->
     <h2 id="v2.4.1">v2.4.1 — 2026-07-21</h2>
