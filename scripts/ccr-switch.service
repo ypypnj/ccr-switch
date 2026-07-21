@@ -1,26 +1,17 @@
 [Unit]
-Description=CCR Switch Multi-Provider Model Proxy
+Description=CCR Switch 多 Provider 模型代理
 After=network.target
-Documentation=https://github.com/musistudio/claude-code-router
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/ese-project/ccr-switch
-ExecStart=/usr/bin/node /root/ese-project/ccr-switch/proxy.js 3456
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/node @INSTALL_DIR@/proxy.js --config @HOME@/.config/ccr-switch/config.json --port 3456
 Restart=always
 RestartSec=5
-StandardOutput=append:/tmp/proxy.log
-StandardError=append:/tmp/proxy.log
-
-# 资源限制
-LimitNOFILE=65536
-
-# 安全加固(轻量,不破坏功能)
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/tmp
+ReadWritePaths=@HOME@/.config/ccr-switch
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

@@ -50,7 +50,25 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v2.4.0 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-16</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.4.1 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-21</p>
+
+    <!-- v2.4.1 -->
+    <h2 id="v2.4.1">v2.4.1 — 2026-07-21</h2>
+    <h3>Changed</h3>
+    <ul>
+      <li><strong>ModelBindings 驱动的可核验模型委派</strong>: 移除 Router 角色路由，所有模型解析通过 <code>ModelBindings</code> 的精确/通配符绑定完成。无静默 fallback —— 未配置模型返回 400 <code>unknown_model</code></li>
+      <li><strong>显式 CLI</strong>: <code>--config</code> 和 <code>--port</code> 均为必需参数，不再依赖隐式默认值</li>
+      <li><strong>Dispatch Receipt</strong>: 模型解析成功后每个响应携带 <code>X-CCR-Dispatch-Id</code> / <code>X-CCR-Resolved-Provider</code> / <code>X-CCR-Resolved-Model</code> / <code>X-CCR-Config-Fingerprint</code> 头部(unresolvable 模型 400 不携带 receipt)，可独立验证路由决策</li>
+      <li><strong>Provider 级熔断隔离</strong>: 每个 provider 独立 30s cool-down，一个 provider circuit-open 不影响其他 provider</li>
+      <li><strong>文档重写</strong>: README.md 和 SKILL.md 从 v2.0.0 过时/损坏状态重写为准确的 v2.4.1 文档；删除 Router 角色路由、claude-* 固定 GLM 等过时叙述；修正控制脚本路径为 <code>~/.local/share/ccr-switch/scripts/</code>(非 <code>/usr/local/bin/</code>)</li>
+      <li><strong>显式路由兼容</strong>: <code>ModelBindings</code> 可为空(<code>{}</code>)，此时只接受显式 <code>provider,alias</code> 或全局唯一裸别名；文档已同步</li>
+    </ul>
+    <h3>Fixed</h3>
+    <ul>
+      <li><strong>安全 restart 与 PID 身份验证</strong>(<code>scripts/ccr-switch-on</code> / <code>scripts/ccr-switch-off</code>): 重写控制脚本生命周期 —— 已有身份匹配的 nohup 代理先安全停止再启动新代理；systemd 用户模式改用 <code>restart</code>；PID 状态扩展为 <code>&lt;pid&gt; &lt;start-time&gt;</code> 双字段，停止前验证 cmdline + start-time 匹配，拒绝 symlink/FIFO PID/state/log 路径，拒绝非当前用户 ownership；绝不使用 <code>pkill</code>/<code>fuser</code>；新进程仅 <code>/health</code> 成功且存活后原子发布 PID 状态，启动失败不得覆盖旧 PID 文件；处理 stale 合法 PID 文件</li>
+      <li><strong>非流式响应体中途中止修复</strong>(<code>proxy.js</code>): 非流式上游在 headers 后 body aborted/error/close-before-end 时，若尚未提交响应则返回 502 <code>provider_network_error</code> 并携带 Dispatch Receipt；保证只结束一次，防止客户端永久悬挂</li>
+      <li><strong><code>install.sh</code> 启动失败 exit code 修复</strong>: 安装后 <code>ccr-switch-on</code> 启动失败时明确返回非零退出码(exit 2)</li>
+    </ul>
 
     <!-- v2.4.0 -->
     <h2 id="v2.4.0">v2.4.0 — 2026-07-16</h2>

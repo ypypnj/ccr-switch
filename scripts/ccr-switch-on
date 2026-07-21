@@ -1,138 +1,182 @@
 #!/usr/bin/env bash
-#
-# ccr-switch-on — 恢复 ccr-switch 代理模式,改 .bashrc 切到 ccr 端点
-#
-# 用法:
-#   ccr-switch-on
-#
-# 副作用:
-#   1. 改写 ~/.bashrc 中 managed 块为 ccr 段(读 presets.json)
-#   2. 启动 proxy.js 监听 3456
-#   3. 健康检查 curl /health
-#   4. 提示重启 Claude Code session
-#
 set -euo pipefail
+umask 077
+INSTALL_DIR="${CCR_SWITCH_INSTALL_DIR:-$HOME/.local/share/ccr-switch}"
+CONFIG_FILE="$HOME/.config/ccr-switch/config.json"
+PORT="${CCR_SWITCH_PORT:-3456}"
+STATE_DIR="$HOME/.config/ccr-switch"
+LOG_FILE="${CCR_SWITCH_LOG_FILE:-$STATE_DIR/proxy.log}"
+PID_FILE="$STATE_DIR/proxy.pid"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+fail(){ printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
-info()  { echo -e "\033[0;36m[INFO]\033[0m  $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-err()   { echo -e "${RED}[ERROR]${NC} $*"; }
-
-# 自定位
-SCRIPT_REAL="$(readlink -f "$0")"
-REPO_ROOT="$(cd "$(dirname "$SCRIPT_REAL")/.." 2>/dev/null && pwd || true)"
-if [[ ! -f "${REPO_ROOT}/presets.json" && -f "/root/ese-project/ccr-switch/presets.json" ]]; then
-  REPO_ROOT="/root/ese-project/ccr-switch"
-fi
-
-PRESETS_FILE="${REPO_ROOT}/presets.json"
-PROXY_JS="${REPO_ROOT}/proxy.js"
-BASHRC="${HOME}/.bashrc"
-HEALTH_URL="http://127.0.0.1:3456/health"
-
-MARKER_BEGIN="# >>> ccr-switch managed block (do not edit) >>>"
-MARKER_END="# <<< ccr-switch managed block <<<"
-
-# 预检
-if [[ ! -f "${PRESETS_FILE}" ]]; then
-  err "未找到 ${PRESETS_FILE}"
-  exit 1
-fi
-if [[ ! -f "${PROXY_JS}" ]]; then
-  err "未找到 ${PROXY_JS}"
-  exit 1
-fi
-
-# 拼装 ccr 段
-build_ccr_block() {
-  local label
-  label=$(jq -r '.ccr.label' "${PRESETS_FILE}")
-  cat <<EOF
-${MARKER_BEGIN}
-# 当前模式: ${label}
-EOF
-  jq -r '.ccr.env | to_entries[] | "export " + .key + "=" + (.value | tostring)' "${PRESETS_FILE}"
-  cat <<EOF
-${MARKER_END}
-EOF
+# ── 祖先路径验证：$HOME、$HOME/.config、state dir、install dir 每级父路径不得为 symlink，且属当前用户 ──
+validate_ancestors(){
+  local target="$1"
+  node - "$target" <<'NODE' || fail "路径祖先链非法(symlink/owner 不匹配): $target"
+const fs=require('fs'),path=require('path'),uid=process.getuid(),target=process.argv[2];
+let cur=path.parse(path.resolve(target)).root;
+for(const part of path.resolve(target).slice(cur.length).split(path.sep).filter(Boolean)){
+  cur=path.join(cur,part);
+  try{const s=fs.lstatSync(cur);if(s.isSymbolicLink()||s.uid!==uid)process.exit(1)}catch(e){if(e.code==='ENOENT')break;throw e}
 }
-
-# 写 .bashrc (idempotent)
-write_bashrc_block() {
-  local block_content="$1"
-  local tmp
-  tmp=$(mktemp)
-  awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" '
-    BEGIN { skip = 0 }
-    $0 == begin { skip = 1; next }
-    $0 == end   { skip = 0; next }
-    !skip { print }
-  ' "$BASHRC" > "$tmp"
-  if [[ -s "$tmp" ]] && [[ "$(tail -c 1 "$tmp")" != $'\n' ]]; then
-    echo "" >> "$tmp"
-  fi
-  echo "" >> "$tmp"
-  echo "$block_content" >> "$tmp"
-  mv "$tmp" "$BASHRC"
-  ok ".bashrc managed 块已恢复为 ccr 段"
+NODE
 }
+validate_ancestors "$HOME"
+validate_ancestors "$STATE_DIR"
+validate_ancestors "$INSTALL_DIR"
 
-# 启动代理
-start_proxy() {
-  if pgrep -f "node.*proxy.js.*3456" >/dev/null 2>&1; then
-    info "proxy.js 已在运行"
-    return 0
-  fi
-  info "启动 ccr-switch 代理..."
-  nohup node "${PROXY_JS}" 3456 > /tmp/proxy.log 2>&1 &
-  sleep 2
-}
-
-# 健康检查
-health_check() {
-  local i
-  for i in 1 2 3 4 5; do
-    if curl -sf "${HEALTH_URL}" >/dev/null 2>&1; then
-      ok "代理健康检查通过 (${HEALTH_URL})"
-      return 0
+# ── 路径边界验证：state dir、log、config、PID 不得为 symlink/FIFO ──
+for path in "$STATE_DIR" "$LOG_FILE" "$CONFIG_FILE" "$PID_FILE"; do
+  if [[ -e "$path" ]]; then
+    [[ ! -L "$path" ]] || fail "$path 不能是 symlink"
+    if [[ "$path" == "$STATE_DIR" ]]; then
+      [[ -d "$path" ]] || fail "$path 不是目录"
+    else
+      [[ -f "$path" ]] || fail "$path 不是普通文件"
     fi
-    sleep 1
-  done
-  err "健康检查失败,查看日志: tail -20 /tmp/proxy.log"
-  return 1
-}
-
-# 提示
-warn_running_claude() {
-  local pids
-  pids=$(pgrep -f "claude" 2>/dev/null | grep -v "$$" | head -5 || true)
-  if [[ -n "$pids" ]]; then
-    warn "检测到运行中的 claude 进程: $pids"
-    warn "切换后请关闭当前 Claude Code session,执行 'source ~/.bashrc' 后重启"
   fi
+done
+# 验证 PID 文件父目录
+pid_parent="$(dirname "$PID_FILE")"
+if [[ -e "$pid_parent" ]]; then
+  [[ ! -L "$pid_parent" ]] || fail "PID 父目录不能是 symlink"
+  [[ -d "$pid_parent" ]] || fail "PID 父路径不是目录"
+fi
+
+# 验证当前用户 ownership
+for path in "$STATE_DIR" "$(dirname "$PID_FILE")" "$LOG_FILE" "$CONFIG_FILE" "$PID_FILE"; do
+  [[ -e "$path" ]] || continue
+  [[ "$(stat -c '%u' "$path" 2>/dev/null || echo 0)" == "$(id -u)" ]] || fail "$path 不属于当前用户"
+done
+
+mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+
+proc_starttime(){
+  [[ "$1" =~ ^[0-9]+$ && -r "/proc/$1/stat" ]] || return 1
+  node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8"),i=s.lastIndexOf(") "),f=s.slice(i+2).split(" ");process.stdout.write(f[19]||"")' "/proc/$1/stat"
 }
 
-# 主流程
-info "切换到 ccr-switch 代理模式..."
-block=$(build_ccr_block)
-write_bashrc_block "$block"
-start_proxy
-if ! health_check; then
-  exit 1
-fi
-warn_running_claude
+# 验证 PID 身份: owner + cmdline + start-time(若提供)
+verify_pid_identity(){
+  local pid="$1" expected_start="$2"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$(stat -c '%u' "/proc/$pid" 2>/dev/null || echo 0)" == "$(id -u)" ]] || return 1
+  local cmd
+  cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  local expected="node $INSTALL_DIR/proxy.js --config $CONFIG_FILE --port $PORT"
+  [[ "$cmd" == *"$expected"* ]] || return 1
+  if [[ -n "$expected_start" ]]; then
+    local start
+    start="$(proc_starttime "$pid" 2>/dev/null || true)"
+    [[ -n "$start" && "$start" == "$expected_start" ]] || return 1
+  fi
+  return 0
+}
 
-echo ""
-ok "已切换到 ccr-switch 代理模式"
-echo -e "  \033[0;36m下一步:\033[0m"
-echo -e "    1) 关闭当前 Claude Code session"
-echo -e "    2) 执行: source ~/.bashrc"
-echo -e "    3) 重新启动: claude"
-echo ""
-echo -e "  \033[0;36m切到直连:\033[0m ccr-switch-off [ds|mm|bd|custom]"
-echo ""
+# ── systemd 用户模式：使用 restart ──
+if [[ "${CCR_SWITCH_USE_SYSTEMD:-0}" == 1 ]]; then
+  if ! systemctl --user restart ccr-switch.service; then
+    fail 'systemctl --user restart 失败'
+  fi
+  printf '[INFO] ccr-switch 已通过 systemd 重启\n'
+  exit 0
+fi
+
+# ── nohup 模式 ──
+PID_STAGING="$STATE_DIR/.proxy.pid.staging.$$"
+cleanup_staging(){ rm -f "$PID_STAGING"; }
+trap cleanup_staging EXIT
+
+# Step 1: 处理已有 PID 文件
+if [[ -f "$PID_FILE" ]]; then
+  chmod 600 "$PID_FILE"
+  old_pid=''; old_start=''; read -r old_pid old_start <"$PID_FILE" 2>/dev/null || true
+  if [[ -n "$old_pid" && "$old_pid" =~ ^[0-9]+$ ]]; then
+    if verify_pid_identity "$old_pid" "$old_start"; then
+      # 身份匹配：安全停止旧代理
+      printf '[INFO] 检测到已有代理 PID=%s，先安全停止\n' "$old_pid"
+      kill -TERM "$old_pid" 2>/dev/null || true
+      waited=0
+      while kill -0 "$old_pid" 2>/dev/null; do
+        sleep 0.1; waited=$((waited+1))
+        if [[ $waited -gt 50 ]]; then kill -KILL "$old_pid" 2>/dev/null || true; break; fi
+      done
+      waited=0
+      while kill -0 "$old_pid" 2>/dev/null; do sleep 0.1; waited=$((waited+1)); [[ $waited -le 20 ]] || break; done
+      rm -f "$PID_FILE"
+    elif ! kill -0 "$old_pid" 2>/dev/null; then
+      # stale PID: 进程已不在
+      printf '[INFO] stale PID 文件(PID=%s 已不在运行)，清理后启动\n' "$old_pid"
+      rm -f "$PID_FILE"
+    else
+      # 活进程但身份不匹配 → fail closed，绝不继续
+      fail "PID 文件存在(PID=$old_pid)但其进程身份不匹配(PID 被复用或已有其他代理占用端口)，拒绝启动"
+    fi
+  else
+    rm -f "$PID_FILE"
+  fi
+fi
+
+# Step 2: 启动新进程
+: >>"$LOG_FILE"; chmod 600 "$LOG_FILE"
+nohup node "$INSTALL_DIR/proxy.js" --config "$CONFIG_FILE" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+new_pid="$!"
+if ! kill -0 "$new_pid" 2>/dev/null; then
+  fail "新进程(PID=$new_pid)启动后立即退出"
+fi
+
+new_start="$(proc_starttime "$new_pid" 2>/dev/null || true)"
+[[ -n "$new_start" ]] || fail "无法读取新进程 start-time (PID=$new_pid)"
+
+# Step 3: 等待 /health 确认代理存活
+if [[ -n "${CCR_SWITCH_TEST_START_FAIL:-}" ]]; then
+  printf '[ERROR] 代理启动失败(PID=%s)，不更新 PID 文件\n' "$new_pid" >&2
+  kill -TERM "$new_pid" 2>/dev/null || true
+  waited=0
+  while kill -0 "$new_pid" 2>/dev/null; do sleep 0.1; waited=$((waited+1)); [[ $waited -le 20 ]] || break; done
+  kill -KILL "$new_pid" 2>/dev/null || true
+  rm -f "$PID_STAGING"
+  exit 2
+fi
+
+health_ok=0
+attempts=0
+while [[ $attempts -lt 80 ]]; do
+  if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+    health_ok=1; break
+  fi
+  kill -0 "$new_pid" 2>/dev/null || break
+  sleep 0.05; attempts=$((attempts+1))
+done
+
+if [[ "$health_ok" != 1 ]]; then
+  printf '[ERROR] 代理启动失败(PID=%s)，不更新 PID 文件\n' "$new_pid" >&2
+  kill -TERM "$new_pid" 2>/dev/null || true
+  waited=0
+  while kill -0 "$new_pid" 2>/dev/null; do sleep 0.1; waited=$((waited+1)); [[ $waited -le 20 ]] || break; done
+  kill -KILL "$new_pid" 2>/dev/null || true
+  rm -f "$PID_STAGING"
+  exit 2
+fi
+
+# Step 4: health 成功后再次验证新 PID 身份(cmdline + start-time) + 存活，再原子发布
+if ! kill -0 "$new_pid" 2>/dev/null; then
+  printf '[ERROR] /health 成功但新进程(PID=%s)已退出(可能为旧代理响应)，不更新 PID 文件\n' "$new_pid" >&2
+  rm -f "$PID_STAGING"
+  exit 2
+fi
+if ! verify_pid_identity "$new_pid" "$new_start"; then
+  printf '[ERROR] /health 成功后新 PID=%s 身份验证失败(可能为旧代理响应或其他进程占用端口)，不更新 PID 文件\n' "$new_pid" >&2
+  kill -TERM "$new_pid" 2>/dev/null || true
+  waited=0
+  while kill -0 "$new_pid" 2>/dev/null; do sleep 0.1; waited=$((waited+1)); [[ $waited -le 20 ]] || break; done
+  kill -KILL "$new_pid" 2>/dev/null || true
+  rm -f "$PID_STAGING"
+  exit 2
+fi
+
+# Step 5: 原子发布 PID 状态
+mv -f "$PID_STAGING" "$PID_FILE"
+trap - EXIT
+printf '[INFO] ccr-switch 已启动 (PID=%s start=%s)\n' "$new_pid" "$new_start"

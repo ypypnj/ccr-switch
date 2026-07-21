@@ -1,85 +1,169 @@
-# ccr-switch v2.0.0
+# ccr-switch v2.4.1
 
-Multi-provider model switching for [Claude Code](https://claude.ai/code).
-
-**DeepSeek V4 Pro / V4 Flash + MiniMax M2.7**, all via Anthropic-compatible endpoints with native thinking.
+Multi-provider model routing for [Claude Code](https://claude.ai/code). A standalone Node.js proxy -- zero external dependencies -- that maps Claude wire model names to configurable upstream providers via Anthropic-compatible endpoints.
 
 ## Architecture
 
+```
+Claude Code  →  127.0.0.1:$PORT  →  proxy.js  →  upstream provider
+                     (--config config.json)         (ds/mm/xa/...)
+```
 
-
-- **v2.0.0**: Standalone ~200 line Node.js proxy — no external dependencies beyond Node.js built-ins
-- Replaces the previous ccr-based architecture which broke after Claude Code v2.1.153 changes
-- Handles Claude Code v2.1.156 format compatibility (system role in messages, adaptive thinking)
+- **v2.4.1**: Runs as a single `proxy.js` file using only Node.js built-ins (`http`, `https`, `fs`, `crypto`).
+- Provider endpoints, API keys, model aliases, and routing bindings all live in one JSON config file.
+- No silent fallback: every model must be explicitly configured.
 
 ## Quick Start
 
-[?1049h[?1h=[1;24r[23m[24m[0m[H[J[?25l[24;1H"proxy.js" [New][2;1H[1m[34m~                                                                               [3;1H~                                                                               [4;1H~                                                                               [5;1H~                                                                               [6;1H~                                                                               [7;1H~                                                                               [8;1H~                                                                               [9;1H~                                                                               [10;1H~                                                                               [11;1H~                                                                               [12;1H~                                                                               [13;1H~                                                                               [14;1H~                                                                               [15;1H~                                                                               [16;1H~                                                                               [17;1H~                                                                               [18;1H~                                                                               [19;1H~                                                                               [20;1H~                                                                               [21;1H~                                                                               [22;1H~                                                                               [23;1H~                                                                               [0m[24;63H0,0-1[9CAll[1;1H[34h[?25h[24;1H[?1l>[?1049lVim: Error reading input, exiting...
-Vim: Finished.
-[24;1H
+```bash
+bash /root/ese-project/ccr-switch/install.sh
+```
 
-Add the env vars to  for persistence. Add  crontab for auto-start on server restart.
+The installer will:
+1. Prompt for the `xa` provider API key (other providers configured separately).
+2. Atomically generate `~/.config/ccr-switch/config.json` (mode `0600`) and `credentials.json` (mode `0600`).
+3. Deploy proxy.js and control scripts to `~/.local/share/ccr-switch/`.
+4. Start the proxy on port 3456.
 
-## Models
+Set environment variables to route Claude Code through the proxy:
 
-| Model | Route | Use | Thinking |
-|---|---|---|---|
-|  | default, think | Deep reasoning | Converted adaptive→enabled |
-|  | background | Fast / background tasks | Stripped (not supported) |
-|  | Manual switch | Long docs, plugins | Native |
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
+export ANTHROPIC_AUTH_TOKEN=any-string-is-ok
+```
 
-## Dynamic Model Switching
+## CLI
 
- works within the same conversation — no need to restart tmux or Claude Code.
+```
+node proxy.js --config <path> --port <port>
+```
 
-## Format Fixes
+Both `--config` and `--port` are required. The config file is validated at startup (schema, duplicate names, dangling bindings, placeholder keys).
 
-The proxy handles three Claude Code v2.1.156 incompatibilities with DeepSeek's Anthropic endpoint:
+## Config -- Single Source of Truth
 
-| Fix | Description |
-|-----|-------------|
-| System role | Moves  from messages array to top-level  field |
-| Adaptive thinking | Converts  →  |
-| Flash thinking | Strips thinking entirely for flash/haiku models |
-| Signature replacement | Replaces DeepSeek-specific signatures with generic ones |
-| Thinking block cache | Caches thinking blocks from responses and re-injects them into subsequent requests |
+All provider endpoints, keys, model aliases, and routing rules live in `config.json`. See `config.example.json` for the template.
 
-## Thinking Block Cache
+### Providers
 
-DeepSeek's Anthropic endpoint requires thinking blocks to be preserved and passed back in multi-turn conversations. Claude Code v2.1.156 strips these blocks when building subsequent requests.
+Each provider declares its endpoint, key, and a short-name to upstream-model mapping:
 
-The proxy maintains a FIFO queue of thinking blocks extracted from streaming responses. When a subsequent request arrives with missing thinking blocks in assistant messages, the proxy re-injects them from the queue.
+```jsonc
+{
+  "Providers": [
+    {
+      "name": "ds",
+      "api_base_url": "https://api.deepseek.com/anthropic/v1/messages",
+      "api_key": "sk-...",
+      "models": { "v4pro": "deepseek-v4-pro", "v4flash": "deepseek-v4-flash" }
+    }
+  ]
+}
+```
 
-### Token Cost
+Short name format for requesting a model: `<provider>,<alias>` (e.g. `ds,v4pro`).
 
-The injected thinking blocks are the REAL thinking content from DeepSeek's responses. They would be present in a correctly-functioning Anthropic API flow. The proxy only restores what Claude Code incorrectly strips — there is no additional token cost beyond normal thinking mode usage.
+### ModelBindings -- Verifiable Model Delegation
 
-### Reasoning Quality
+`ModelBindings` is the primary routing mechanism. When a Claude wire model maps to a binding, that target is used. `ModelBindings` may be empty (`{}`) -- in that case only explicit `provider,alias` (or a globally unique bare alias) routes successfully.
 
-The cached blocks are DeepSeek's own chain-of-thought from previous turns. Passing them back is REQUIRED by DeepSeek's API for multi-turn reasoning continuity. Without them, the API returns HTTP 400. With them, the model can build on its previous reasoning.
+Both exact and wildcard patterns are supported:
 
-## Files
+```jsonc
+{
+  "ModelBindings": {
+    "claude-haiku-*":  "ds,v4flash",
+    "claude-sonnet-*":  "ds,v4pro",
+    "claude-opus-*":   "xa,gpt5.6",
+    "claude-fable-*":  "xa,gpt5.6"
+  }
+}
+```
 
-| File | Purpose |
+Rules:
+- **ModelBindings takes priority**: exact match wins over wildcard; longest wildcard prefix wins when multiple patterns overlap.
+- When no binding matches, the wire model is parsed as `provider,alias` directly -- if the provider and alias both exist, the request is routed. A globally unique bare alias (matching exactly one provider alias) is also accepted. Any other form returns 400 `unknown_model`.
+- A binding target must reference a real provider+model pair (validated at startup).
+- Changing a mapping target (e.g. pointing `claude-haiku-*` to a different provider) requires only a config edit and proxy restart -- no code changes.
+
+### Resolution Flow
+
+```
+wire model from request
+  → check ModelBindings (exact, then longest wildcard prefix)
+    → if found: use the bound target (provider,model)
+    → if not found: parse wire model as "provider,model" directly
+      → if valid provider+model pair: use it
+    → if not found: try as globally unique bare alias
+      → if exactly one provider has this alias: use it
+      → else: 400 unknown_model
+```
+
+There is no implicit fallback to a default provider. Unknown models return HTTP 400.
+
+## Dispatch Receipt
+
+When the requested model is successfully resolved, the response includes headers that form a verifiable dispatch receipt. Responses for unknown/malformed models (400 `unknown_model`) do not carry a resolved receipt.
+
+| Header | Meaning |
 |---|---|
-|  | Standalone proxy — all logic in one file |
-|  | Legacy ccr config (no longer used) |
-|  | Legacy ccr patches (no longer used) |
-|  | Legacy ccr installer (no longer used) |
-|  | Env vars template |
-|  | This file |
+| `X-CCR-Dispatch-Id` | Unique request ID (24 hex chars) |
+| `X-CCR-Requested-Model` | Wire model as received |
+| `X-CCR-Resolved-Provider` | Provider short name that handled the request |
+| `X-CCR-Resolved-Model` | Actual upstream model name |
+| `X-CCR-Config-Fingerprint` | SHA-256 of provider and binding config (verifies config identity) |
+
+## Error Classification
+
+All errors are classified by type, with no silent fallback:
+
+| HTTP | Error Type | Meaning |
+|---|---|---|
+| 400 | `unknown_model` | Model not found in any provider or binding |
+| 429 | `provider_rate_limited` | Upstream returned 429; provider enters 30s cool-down |
+| 503 | `provider_circuit_open` | Provider in cool-down; all requests blocked for 30s |
+| 503/529 | `provider_overloaded` | Upstream returned 503/529; same cool-down behavior |
+| 502 | `provider_network_error` | TCP connection to upstream failed |
+| varies | `upstream_error` | Non-SSE error from upstream (non-streaming path) |
+
+**Provider isolation**: when one provider enters circuit-open, other providers continue to serve requests normally. Each provider maintains an independent cool-down timer.
+
+## Supported Providers
+
+| Provider | Short | Models | Thinking |
+|---|---|---|---|
+| DeepSeek | `ds,v4pro` / `ds,v4flash` | deepseek-v4-pro, deepseek-v4-flash | thinking cache round-trip |
+| MiniMax | `mm,m3` | MiniMax-M3 | extended thinking auto-injected |
+| xapex | `xa,gpt5.6` | gpt-5.6-sol | passthrough (non-thinking) |
+
+## Endpoints
+
+| Path | Method | Description |
+|---|---|---|
+| `/v1/messages` | POST | Forward to resolved upstream |
+| `/v1/models` | GET | List all available provider+model pairs |
+| `/health` | GET | Health check (`{"status":"ok"}`) |
+
+## Control Scripts
+
+Deployed to `~/.local/share/ccr-switch/scripts/`:
+
+| Command | Purpose |
+|---|---|
+| `ccr-switch-on` | Start proxy (nohup or systemd user unit) |
+| `ccr-switch-off` | Stop proxy (by PID identity check or systemd) |
+| `ccr-switch-status` | Health check via `/health` endpoint |
+
+## Install Safety
+
+- **Symlink attack prevention**: All directory and file paths are validated before any mutation (no symlinks, correct owner, correct type).
+- **Atomic config generation**: Credentials and config are staged in temporary files, then `mv`-renamed atomically.
+- **Transaction-based rollback**: If any step fails mid-install, old files are restored from backup using inode identity verification.
+- **Permission enforcement**: Config dir `0700`, config and credentials files `0600` throughout.
+- **Lock-based concurrency**: Install script uses a mutual-exclusion directory lock with stale detection.
+- **Placeholder guard**: proxy.js refuses to start if any provider API key contains placeholder strings.
+- **Zero secrets in repo**: No API keys or credentials are committed to the repository.
 
 ## License
 
 MIT
-
-## 版本历史
-
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| 2.4.0 | 2026-07-16 | **MINOR 新增 provider**: 新增 `xa,gpt5.6` (xapex.cn gpt-5.6-sol);`proxy.js` 加 `upRes.on('close')` 流式无声断连防御(v2.3.1) — GLM 高 thinking 请求偶发 socket 关闭时,补 `message_delta`(max_tokens)+ `message_stop` 截断结尾,消除客户端 `Unexpected EOF` |
-| 2.3.0 | 2026-07-15 | **FIX EOF 误判**: claude-* 子代理别名从 ds.models 移至 bd.models(避免 ds 401 时 sub-agent EOF);proxy.js 流式路径加非 200 防御,上游 401/5xx 返回自洽 JSON 而非半行 SSE |
-| 2.2.0 | 2026-07-15 | **FIX auto mode unavailable**: GLM-5.2 在 max_tokens 受限时输出空 text 触发 auto mode 误判;proxy.js 在响应末尾自动追加 `"OK"` 占位 text 块(streaming 在 `message_stop` 前注入) |
-| 2.1.0 | 2026-07-14 | **MAJOR 解耦硬编码**: proxy.js 不再硬编码 PROVIDERS;启动期从 `config.json` 读 url/key/models;启动期占位符守卫拒绝运行;models 数组格式 FATAL 退出 |
-| 2.0.1 | 2026-06-13 | **PATCH 文档同步**: SKILL.md 整体重写反映 v2.0.0 独立路由引擎实际行为;加 frontmatter `version`;加命令/路由/故障排除/安全/卸载 5 章节;删除 patch.js 残留 |
-| 2.0.0 | 2026-06-13 | **MAJOR 解耦**: 删除 `claude-code-router` 依赖(释放 2.9GB);`proxy.js` 升级为 v6 独立路由引擎;`presets.json` 加 `routes` 段;新增 `ccr-switch-status` 命令;`patch.js` + `ccr-switch-start` 整文件删除;`install.sh` 9 步精简(删除 npm install / config 部署 / patch 步骤) |

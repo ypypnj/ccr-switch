@@ -27,16 +27,6 @@
       }
     },
     {
-      "id": "bd",
-      "alias": "bd,glm5.2",
-      "label": "Baidu Qianfan GLM-5.2",
-      "env": {
-        "ANTHROPIC_BASE_URL": "https://qianfan.baidubce.com/anthropic/tokenplan/personal",
-        "ANTHROPIC_AUTH_TOKEN": "<BD_KEY>",
-        "ANTHROPIC_MODEL": "glm-5.2"
-      }
-    },
-    {
       "id": "xa",
       "alias": "xa,gpt5.6",
       "label": "xapex gpt-5.6-sol",
@@ -48,7 +38,7 @@
     }
   ],
   "ccr": {
-    "label": "ccr-switch 代理 (ds, v4pro / mm, m3 / bd, glm5.2)",
+    "label": "ccr-switch 代理 (ds, v4pro / ds, v4flash / mm, m3 / xa, gpt5.6)",
     "env": {
       "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
       "ANTHROPIC_AUTH_TOKEN": "any-string-is-ok",

@@ -1,11 +1,42 @@
 #!/usr/bin/env node
-// ccr-switch proxy v8 — v2.3.1 流式无声断连防御 (补截断结尾)
+// ccr-switch proxy v9 — v2.4.1 可核验模型委派 (安全修复: 非流式响应体中途中止 502 防御)
 var http = require('http');
 var https = require('https');
 var fs = require('fs');
 var crypto = require('crypto');
-var PORT = process.argv[2] || 3456;
-var LOG = '/tmp/proxy-debug.log';
+
+function fail(message) {
+  console.error('错误：' + message);
+  process.exit(1);
+}
+function parseArgs(argv) {
+  if (argv.length === 1 && !argv[0].startsWith('-')) {
+    return { config: __dirname + '/config.json', port: parsePort(argv[0]) };
+  }
+  var result = { config: null, port: null };
+  for (var i = 0; i < argv.length; i++) {
+    if (argv[i] === '--config') {
+      if (!argv[++i]) fail('--config 参数缺少配置路径');
+      result.config = argv[i];
+    } else if (argv[i] === '--port') {
+      if (!argv[++i]) fail('--port 参数缺少端口值');
+      result.port = parsePort(argv[i]);
+    } else {
+      fail('未知参数：' + argv[i]);
+    }
+  }
+  if (!result.config) fail('缺少必需参数 --config');
+  if (result.port === null) fail('缺少必需参数 --port');
+  return result;
+}
+function parsePort(value) {
+  if (!/^\d+$/.test(String(value)) || Number(value) < 1 || Number(value) > 65535) fail('端口非法：必须为 1-65535 的整数');
+  return Number(value);
+}
+var cli = parseArgs(process.argv.slice(2));
+var PORT = cli.port;
+var LOG_DIR = (process.env.HOME || '') + '/.config/ccr-switch';
+var LOG = process.env.CCR_SWITCH_LOG || LOG_DIR + '/proxy.log';
 var MAX_LOG_BYTES = 5 * 1024 * 1024; // 5MB 单文件上限,超限自动 rotate
 
 // 日志轮转:超过 MAX_LOG_BYTES 时把 .log → .log.1,新文件从空开始
@@ -22,9 +53,15 @@ function rotateLog() {
 
 function log(msg) {
   var ts = new Date().toISOString();
-  var line = ts + ' ' + msg;
+  var line = ts + ' ' + String(msg).replace(/(authorization|api[_-]?key|token)\s*[:=]\s*\S+/ig, '$1=[已脱敏]');
   console.error(line);
-  try { rotateLog(); fs.appendFileSync(LOG, line + '\n'); } catch(e) {}
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+    try { if (fs.lstatSync(LOG).isSymbolicLink()) return; } catch(e) {}
+    rotateLog();
+    fs.appendFileSync(LOG, line + '\n', { mode: 0o600 });
+    fs.chmodSync(LOG, 0o600);
+  } catch(e) {}
 }
 
 // 429 限流状态:每 provider 记录最近一次 429 时间,窗口内直接拒绝转发
@@ -51,34 +88,52 @@ function shortNameOf(modelStr) {
 // 进程级异常保护 (v1.3.2):防止异步回调里的 unhandled error 把进程杀掉
 // 429 风暴 + 客户端快速断开 → 大量 EPIPE/RST → 不监听就 unhandledException → 进程退出
 process.on('uncaughtException', function(e) {
-  log('UNCAUGHT ' + (e && e.code ? e.code : '') + ' ' + (e && e.message ? e.message : String(e)));
+  log('未捕获异常，进程退出 code=' + (e && e.code ? e.code : 'unknown'));
+  process.exit(1);
 });
-process.on('unhandledRejection', function(reason) {
-  log('UNHANDLED REJECTION ' + (reason && reason.message ? reason.message : String(reason)));
+process.on('unhandledRejection', function() {
+  log('未处理 Promise 拒绝，进程退出');
+  process.exit(1);
 });
 
 // ── v2.1.0 读取 config.json 作为 provider 配置的单源真理 ──────────────────
 // 不再硬编码任何 provider 信息,所有端点和 key 从 config.json 读取。
 // config.json 中 models 必须为对象格式 { "短名": "上游模型名" },数组格式已废弃。
-var configPath = __dirname + '/config.json';
+var configPath = cli.config;
 var config;
 try {
   config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 } catch(e) {
-  console.error('FATAL: 无法读取 config.json: ' + e.message);
-  process.exit(1);
+  fail('无法读取或解析配置 JSON：' + e.message);
 }
+if (!config || !Array.isArray(config.Providers) || config.Providers.length === 0) fail('配置缺少 Providers');
 var PROVIDERS = {};
-var DEFAULT_PROVIDER = null;
-config.Providers.forEach(function(p) {
-  if (Array.isArray(p.models)) {
-    console.error('FATAL: Provider ' + p.name + ' 的 models 字段为数组格式(v2.0),请升级为对象映射格式。');
-    console.error('  参考 config.example.json 中的新格式: {"短名":"上游模型名", ...}');
-    process.exit(1);
+config.Providers.forEach(function(p, index) {
+  if (!p || typeof p !== 'object' || typeof p.name !== 'string' || !p.name || typeof p.api_base_url !== 'string' || !/^https?:\/\//.test(p.api_base_url) || typeof p.api_key !== 'string' || !p.api_key || !p.models || typeof p.models !== 'object' || Array.isArray(p.models)) {
+    fail('配置 Provider[' + index + '] schema 非法');
   }
+  if (PROVIDERS[p.name]) fail('配置 Provider 名称重复：' + p.name);
+  var modelNames = Object.keys(p.models);
+  if (!modelNames.length || modelNames.some(function(k){ return typeof p.models[k] !== 'string' || !p.models[k]; })) fail('配置 Provider[' + index + '] models 非法');
   PROVIDERS[p.name] = { url: p.api_base_url, key: p.api_key, models: p.models };
-  if (!DEFAULT_PROVIDER) DEFAULT_PROVIDER = p.name;
 });
+var MODEL_BINDINGS = config.ModelBindings || {};
+if (!MODEL_BINDINGS || typeof MODEL_BINDINGS !== 'object' || Array.isArray(MODEL_BINDINGS)) fail('配置 ModelBindings schema 非法');
+// 兼容 Claude Code 自动升级后的日期后缀和小版本；匹配规则与目标都来自配置。
+// 精确键优先，其次使用最长前缀的单尾星号键（如 claude-haiku-*）。
+var MODEL_BINDING_PATTERNS = [];
+Object.keys(MODEL_BINDINGS).forEach(function(wireModel) {
+  var target = MODEL_BINDINGS[wireModel];
+  if (!/^[A-Za-z0-9._-]+\*?$/.test(wireModel) || wireModel === '*' || typeof target !== 'string' || !/^[A-Za-z0-9._-]+,[A-Za-z0-9._-]+$/.test(target)) fail('配置 ModelBindings.' + wireModel + ' 非法');
+  var parts = target.split(',');
+  if (!PROVIDERS[parts[0]] || !PROVIDERS[parts[0]].models[parts[1]]) fail('配置 ModelBindings.' + wireModel + ' 指向未知模型');
+  if (wireModel.endsWith('*')) MODEL_BINDING_PATTERNS.push({ prefix: wireModel.slice(0, -1), target: target });
+});
+MODEL_BINDING_PATTERNS.sort(function(a, b) { return b.prefix.length - a.prefix.length; });
+var CONFIG_FINGERPRINT = crypto.createHash('sha256').update(JSON.stringify({
+  providers: Object.keys(PROVIDERS).sort().map(function(name) { return { name: name, url: PROVIDERS[name].url, models: PROVIDERS[name].models }; }),
+  bindings: MODEL_BINDINGS
+})).digest('hex');
 
 var thinkCache = {};
 var MAX_CACHE = 30;
@@ -122,16 +177,48 @@ function injectThink(reqBody) {
   return injected;
 }
 
-function resolveModel(model) { model = (model || "v4pro").replace(/，/g, ","); model = (model || 'v4pro').replace(/\uff0c/g, ',');
-  var parts = (model || 'v4pro').split(',');
+function configuredBinding(model) {
+  if (Object.prototype.hasOwnProperty.call(MODEL_BINDINGS, model)) return MODEL_BINDINGS[model];
+  for (var i = 0; i < MODEL_BINDING_PATTERNS.length; i++) {
+    if (model.startsWith(MODEL_BINDING_PATTERNS[i].prefix)) return MODEL_BINDING_PATTERNS[i].target;
+  }
+  return model;
+}
+function resolveModel(model) {
+  if (typeof model !== 'string' || !model) return null;
+  model = model.replace(/，/g, ',');
+  var requested = configuredBinding(model);
+  var parts = requested.split(',');
   if (parts.length === 2) {
     var prov = parts[0], mod = parts[1];
-    if (PROVIDERS[prov] && PROVIDERS[prov].models[mod]) return { provider: PROVIDERS[prov], model: PROVIDERS[prov].models[mod] };
+    if (PROVIDERS[prov] && PROVIDERS[prov].models[mod]) return { providerName: prov, provider: PROVIDERS[prov], alias: mod, model: PROVIDERS[prov].models[mod], binding: requested !== model };
+    return null;
   }
+  var matches = [];
   for (var p in PROVIDERS) {
-    if (PROVIDERS[p].models[model]) return { provider: PROVIDERS[p], model: PROVIDERS[p].models[model] };
+    if (PROVIDERS[p].models[requested]) matches.push({ providerName: p, provider: PROVIDERS[p], alias: requested, model: PROVIDERS[p].models[requested], binding: requested !== model });
   }
-  var def = PROVIDERS[DEFAULT_PROVIDER]; var defModel = def && Object.keys(def.models)[0]; return { provider: def, model: defModel || 'unknown' };
+  return matches.length === 1 ? matches[0] : null;
+}
+function receiptHeaders(resolved, requestedModel, dispatchId) {
+  return {
+    'X-CCR-Dispatch-Id': dispatchId,
+    'X-CCR-Requested-Model': requestedModel,
+    'X-CCR-Resolved-Provider': resolved.providerName,
+    'X-CCR-Resolved-Model': resolved.model,
+    'X-CCR-Config-Fingerprint': CONFIG_FINGERPRINT
+  };
+}
+function mergeHeaders(base, extra) {
+  var out = {};
+  Object.keys(base || {}).forEach(function(k) { out[k] = base[k]; });
+  Object.keys(extra || {}).forEach(function(k) { out[k] = extra[k]; });
+  return out;
+}
+function retryAfterSeconds(headers) {
+  var raw = headers && headers['retry-after'];
+  if (/^\d+$/.test(String(raw || ''))) return Math.max(1, Math.min(300, Number(raw)));
+  return COOL_DOWN_MS / 1000;
 }
 
 function countThinking(body) {
@@ -201,13 +288,19 @@ var server = http.createServer(function(req, res) {
         log('REQ model=' + String(data.model).replace(/[\r\n]/g, ' ') + ' msgs=' + (data.messages||[]).length + ' think=' + thinkBlocksIn + ' top=' + JSON.stringify(data.thinking));
 
         var resolved = resolveModel(data.model);
-        var provName = shortNameOf(data.model) || 'unknown';
-        // 429 backoff (v1.3.2):该 provider 在 coolDown 窗口内,直接 503 拒收
-        // 减少上游 429 时的重试风暴,降低客户端断开概率
+        if (!resolved) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'unknown_model', message: 'requested model is not configured' } }));
+          return;
+        }
+        var provName = resolved.providerName;
+        var dispatchId = crypto.randomBytes(12).toString('hex');
+        var dispatchHeaders = receiptHeaders(resolved, originalModel, dispatchId);
+        // 429/overload backoff:该 provider 在 coolDown 窗口内直接拒收。
         if (isCoolingDown(provName)) {
           log('COOLING DOWN provider=' + provName + ' reject=503');
-          res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) });
-          res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider cooling down, retry in ' + (COOL_DOWN_MS/1000) + 's' } }));
+          res.writeHead(503, mergeHeaders({ 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) }, dispatchHeaders));
+          res.end(JSON.stringify({ error: { type: 'provider_circuit_open', message: 'provider cooling down' } }));
           return;
         }
         data.model = resolved.model;
@@ -231,23 +324,40 @@ var server = http.createServer(function(req, res) {
         var url = new URL(resolved.provider.url);
         var postData = JSON.stringify(data);
         var options = {
-          hostname: url.hostname, port: url.port || 443,
+          hostname: url.hostname, port: url.port || (url.protocol === 'http:' ? 80 : 443),
           path: url.pathname + (req.url.includes('?') ? '?' + req.url.split('?')[1] : ''),
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': resolved.provider.key, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(postData) }
         };
 
-        var upstream = https.request(options, function(upRes) {
+        var requestTransport = url.protocol === 'http:' ? http : https;
+        var upstream = requestTransport.request(options, function(upRes) {
           // 上游响应流 error 监听(v1.3.2):网络层 ECONNRESET/EPIPE 不监听会冒泡杀进程
-          upRes.on('error', function(e) { log('UPRES ERR ' + e.code + ' ' + e.message); });
+          upRes.on('error', function(e) {
+            log('上游响应流错误 code=' + (e.code || 'unknown'));
+            if (isStream && !streamFinished && !res.writableEnded) {
+              streamFinished = true;
+              try {
+                res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":0}}\n\n');
+                res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+              } catch(_) {}
+              res.end();
+            }
+          });
           if (isStream) {
-            // 429 必须立刻改写为 503 + Retry-After 拒收(不能再透传 upRes.statusCode=429,
-            // 否则客户端会立刻重试,coolDown 窗口形同虚设)
             if (upRes.statusCode === 429) {
+              var retryAfter = retryAfterSeconds(upRes.headers);
               markRateLimited(provName);
-              upRes.resume(); // 丢弃上游 body,防止 socket 悬挂
-              res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': String(COOL_DOWN_MS / 1000) });
-              return res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider 429, coolDown ' + (COOL_DOWN_MS/1000) + 's' } }));
+              upRes.resume();
+              res.writeHead(429, mergeHeaders({ 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) }, dispatchHeaders));
+              return res.end(JSON.stringify({ error: { type: 'provider_rate_limited', message: 'provider rate limited' } }));
+            }
+            if (upRes.statusCode === 503 || upRes.statusCode === 529) {
+              var overloadRetryAfter = retryAfterSeconds(upRes.headers);
+              markRateLimited(provName);
+              upRes.resume();
+              res.writeHead(upRes.statusCode, mergeHeaders({ 'Content-Type': 'application/json', 'Retry-After': String(overloadRetryAfter) }, dispatchHeaders));
+              return res.end(JSON.stringify({ error: { type: 'provider_overloaded', message: 'provider overloaded' } }));
             }
             // v2.3.0: 非 429 错误(401/403/5xx)上游返回的是非 SSE 的 JSON 错误体。
             // 若按 SSE 转发(res.write 半行),客户端 SSE 解析器拿到裸 JSON,等 \n\n
@@ -255,14 +365,14 @@ var server = http.createServer(function(req, res) {
             // 改为丢弃上游 body,返回自洽的非流式 JSON 错误,客户端能看到真实状态码。
             if (upRes.statusCode >= 400) {
               upRes.resume();
-              var errBody = JSON.stringify({ error: { type: 'upstream_error', status: upRes.statusCode, message: 'upstream ' + upRes.statusCode + ' for model ' + originalModel } });
-              res.writeHead(upRes.statusCode, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(errBody) });
+              var errBody = JSON.stringify({ error: { type: 'upstream_error', status: upRes.statusCode, message: 'upstream request failed' } });
+              res.writeHead(upRes.statusCode, mergeHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(errBody) }, dispatchHeaders));
               res.end(errBody);
               log('STREAM ERROR ' + upRes.statusCode + ' (non-SSE → JSON) model=' + originalModel);
               return;
             }
             delete upRes.headers['content-length'];
-            res.writeHead(upRes.statusCode, upRes.headers);
+            res.writeHead(upRes.statusCode, mergeHeaders(upRes.headers, dispatchHeaders));
             var leftover = '';
             var fullText = '';
             var fallbackInjected = false;
@@ -314,6 +424,7 @@ var server = http.createServer(function(req, res) {
               }
             });
             upRes.on('end', function() {
+              streamFinished = true;
               if (leftover) { fullText += leftover; res.write(leftover); }
               if (!res.writableEnded) res.end();
               // Extract thinking blocks from streaming response for caching
@@ -334,7 +445,18 @@ var server = http.createServer(function(req, res) {
             // 这里在 socket 真正关闭时兜底结束 res,并记日志确认根因。
             // (若 'end' 已正常触发,'close' 随后到达时 streamFinished 守卫会跳过)
             var streamFinished = false;
-            upRes.on('end', function() { streamFinished = true; });
+            upRes.on('aborted', function() {
+              if (streamFinished) return;
+              streamFinished = true;
+              if (!res.writableEnded) {
+                try {
+                  res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":0}}\n\n');
+                  res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+                } catch(_) {}
+                res.end();
+              }
+              log('STREAM ABORTED model=' + originalModel);
+            });
             upRes.on('close', function() {
               if (streamFinished) return;
               streamFinished = true;
@@ -351,18 +473,36 @@ var server = http.createServer(function(req, res) {
             });
           } else {
             var respBody = '';
+            var nonStreamingFinished = false;
+            function endNonStreamingError() {
+              if (nonStreamingFinished) return;
+              nonStreamingFinished = true;
+              if (res.writableEnded) return;
+              try {
+                var errBody = JSON.stringify({ error: { type: 'provider_network_error', message: '上游响应体中途中止' } });
+                res.writeHead(502, mergeHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(errBody) }, dispatchHeaders));
+                res.end(errBody);
+              } catch(_) {}
+            }
+            upRes.on('error', function(e) { log('上游非流式响应体错误 code=' + (e && e.code || 'unknown')); endNonStreamingError(); });
+            upRes.on('aborted', function() { log('上游非流式响应体 aborted model=' + originalModel); endNonStreamingError(); });
+            upRes.on('close', function() { if (nonStreamingFinished) return; log('上游非流式响应体 close-before-end model=' + originalModel); endNonStreamingError(); });
             upRes.on('data', function(c) { respBody += c; });
             upRes.on('end', function() {
+              if (nonStreamingFinished) return;
+              nonStreamingFinished = true;
               if (upRes.statusCode >= 400) {
-                if (upRes.statusCode === 429) {
-                  // 429 单次记 RATE LIMIT 后进入 coolDown,向客户端返回 503(v1.3.2)
+                if (upRes.statusCode === 429 || upRes.statusCode === 503 || upRes.statusCode === 529) {
+                  var limited = upRes.statusCode === 429;
+                  var retryAfter = retryAfterSeconds(upRes.headers);
                   markRateLimited(provName);
-                  res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
-                  res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'provider 429, coolDown 30s' } }));
+                  res.writeHead(upRes.statusCode, mergeHeaders({ 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) }, dispatchHeaders));
+                  res.end(JSON.stringify({ error: { type: limited ? 'provider_rate_limited' : 'provider_overloaded', message: limited ? 'provider rate limited' : 'provider overloaded' } }));
                 } else {
-                  log('ERROR ' + upRes.statusCode + ' ' + respBody.substring(0, 300));
-                  res.writeHead(upRes.statusCode, upRes.headers);
-                  res.end(respBody);
+                  log('上游非流式错误 status=' + upRes.statusCode + ' model=' + originalModel);
+                  var safeError = JSON.stringify({ error: { type: 'upstream_error', status: upRes.statusCode, message: '上游请求失败' } });
+                  res.writeHead(upRes.statusCode, mergeHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(safeError) }, dispatchHeaders));
+                  res.end(safeError);
                 }
               } else {
                 try {
@@ -377,10 +517,8 @@ var server = http.createServer(function(req, res) {
                     });
                   }
                   if (blocks.length > 0) { }
-                  // v2.2.0 auto mode 兜底:GLM-5.2 等 thinking 模型在 max_tokens 受限时
-                  // 可能输出空 text 块(text=""),触发 Claude Code auto mode 误判
-                  // "bd,glm5.2 is temporarily unavailable"。检测到"有 thinking 无 text"时
-                  // 在 content 末尾追加最小占位 text,让 auto mode 看到非空响应。
+                  // thinking 模型在 max_tokens 受限时可能输出空 text 块；
+                  // 追加最小占位 text，避免客户端把有效 thinking 响应误判为模型不可用。
                   var hasNonEmptyText = rj.content && rj.content.some(function(c) {
                     return c && c.type === 'text' && typeof c.text === 'string' && c.text.length > 0;
                   });
@@ -391,11 +529,11 @@ var server = http.createServer(function(req, res) {
                   rj.model = originalModel;
               if (!rj.stop_sequence && rj.stop_sequence !== null) { rj.stop_sequence = null; }
               delete rj.base_resp;
-              var fixed = JSON.stringify(rj); var hdrs={}; Object.keys(upRes.headers).forEach(function(k){hdrs[k]=upRes.headers[k]}); hdrs["content-length"]=Buffer.byteLength(fixed); res.writeHead(upRes.statusCode, hdrs); res.end(fixed);
+              var fixed = JSON.stringify(rj); var hdrs=mergeHeaders(upRes.headers,dispatchHeaders); delete hdrs["transfer-encoding"]; hdrs["content-length"]=Buffer.byteLength(fixed); res.writeHead(upRes.statusCode, hdrs); res.end(fixed);
                   log('OK model=' + rj.model + ' cached=' + blocks.length);
                 } catch(e) {
                   log('OK (raw pipe)');
-                  res.writeHead(upRes.statusCode, upRes.headers);
+                  res.writeHead(upRes.statusCode, mergeHeaders(upRes.headers, dispatchHeaders));
                   res.end(respBody);
                 }
               }
@@ -403,15 +541,18 @@ var server = http.createServer(function(req, res) {
           }
         });
         upstream.on('error', function(e) {
-          log('NET ERROR ' + (e && e.code || '') + ' ' + e.message);
+          log('上游请求网络错误 code=' + (e && e.code || 'unknown'));
           // 防御性:res 可能已关闭(被 coolDown/429 提前 end),不检查会抛 ERR_STREAM_WRITE_AFTER_END
           if (res.writableEnded) return;
-          try { res.writeHead(502); res.end(JSON.stringify({error:{message:e.message}})); } catch(_) {}
+          try {
+            res.writeHead(502, mergeHeaders({ 'Content-Type': 'application/json' }, dispatchHeaders));
+            res.end(JSON.stringify({error:{type:'provider_network_error',message:'上游连接失败'}}));
+          } catch(_) {}
         });
         upstream.write(postData);
         upstream.end();
       } catch(e) {
-        log('PARSE ERROR ' + e.message);
+        log('请求解析失败');
         res.writeHead(400); res.end(JSON.stringify({error:{message:'Bad request'}}));
       }
     });
@@ -438,9 +579,9 @@ var server = http.createServer(function(req, res) {
     return !p.api_key || p.api_key.indexOf('__') >= 0 || p.api_key.indexOf('YOUR_') >= 0;
   });
   if (bad.length) {
-    console.error('FATAL: config.json Providers 中仍含占位符 key: ' + bad.map(function(p){return p.name;}).join(','));
-    console.error('  请编辑 config.json 填入真 key,或运行 bash install.sh --reinstall 重新生成。');
+    console.error('错误：配置 Providers 中仍含占位符 key：' + bad.map(function(p){return p.name;}).join(','));
+    console.error('请通过安装器生成运行时配置。');
     process.exit(1);
   }
 })();
-server.listen(PORT, '127.0.0.1', function() { log('STARTED v8 (v2.3.1) on 127.0.0.1:' + PORT); });
+server.listen(PORT, '127.0.0.1', function() { log('STARTED v9 (v2.4.1) on 127.0.0.1:' + PORT); });

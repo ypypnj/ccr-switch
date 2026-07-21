@@ -1,331 +1,107 @@
 #!/usr/bin/env bash
-#
-# install.sh — ccr-switch v2.1.0 一键安装脚本
-#
-# 功能 (v2.1.0 config.json 单源真理 + 全链路 glm5.2):
-#   1. 部署 presets.json (从 presets.example.json 复制)
-#   2. 部署 config.json (从 config.example.json 复制 + 注入真 key)
-#   3. 管理 ~/.claude/dev-flow/credentials.json (chmod 600,真 key 存储)
-#   4. 部署 ccr-switch-off / ccr-switch-on / ccr-switch-status 到 /usr/local/bin
-#   5. 追加 .bashrc 段 (与 ccr-switch-on 共享 marker 块)
-#   6. 启动 ccr-switch 代理 + 部署 systemd 服务
-#
-# v2.1.0 重大变更: proxy.js 不再硬编码 PROVIDERS,启动时从 config.json 读取。
-#                  所有 provider 配置(url / key / models)统一在 config.json 管理。
-#                  删除 sed 替换 proxy.js 占位符的逻辑(proxy.js 不再含占位符)。
-#                  默认 provider 升级为百度千帆 GLM-5.2(tokenplan/personal 端点)。
-#
-# v2.0.0 重大变更: ccr-switch 拥有完整独立路由引擎,不再依赖 @musistudio/claude-code-router。
-#                  原 npm 全局包 (~/.claude-code-router/, 2.9GB) 可手动删除,无功能影响。
-#
-# 用法:
-#   bash install.sh                    # 完整安装(默认)
-#   bash install.sh --reinstall        # 强制重新生成 config.json 并启动代理
-#   bash install.sh --ccr-switch-on    # 仅启动 ccr-switch 代理(不重装依赖)
-#   bash install.sh --help             # 显示帮助
-#
-# v2.1.0 历史:
-#   v1.3.0 安全改造: 真 key 全部从 ~/.claude/dev-flow/credentials.json 读取
-#   v1.3.1 修复: 增加参数解析 + 占位符缺失保护 + systemd 服务部署
-#   v2.0.0 重构: 删除 claude-code-router 依赖,proxy.js 升级为独立路由引擎
-#   v2.1.0 重构: proxy.js 从 config.json 读 provider,删除硬编码 PROVIDERS + sed 占位符替换
-#   v2.1.0 升级: 默认 provider 增加百度千帆 GLM-5.2(tokenplan/personal 端点)
-#
+{ set +x; } 2>/dev/null
 set -euo pipefail
-
-# ── 参数解析 ────────────────────────────────────────────────────────────────
-MODE="full"  # full | reinstall | start-only
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --reinstall) MODE="reinstall"; shift ;;
-    --ccr-switch-on|--start-only) MODE="start-only"; shift ;;
-    --help|-h)
-      echo "用法: bash install.sh [--reinstall | --ccr-switch-on | --help]"
-      echo "  --reinstall        强制重新替换占位符并启动代理"
-      echo "  --ccr-switch-on    仅启动 ccr-switch 代理(不重装依赖)"
-      echo "  --help             显示此帮助"
-      exit 0
-      ;;
-    *) err "未知参数: $1"; exit 1 ;;
-  esac
-done
-
-# ── Colours ────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-err()   { echo -e "${RED}[ERROR]${NC} $*"; }
-
-# ── Self-location ──────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# ── start-only 模式:跳过全部安装步骤,只启动代理 ────────────────────────────
-if [[ "$MODE" == "start-only" ]]; then
-  info "模式: start-only (仅启动 ccr-switch 代理)"
-  if [[ ! -f "${SCRIPT_DIR}/proxy.js" ]]; then
-    err "未找到 ${SCRIPT_DIR}/proxy.js"
-    exit 1
+info(){ printf '[INFO] %s\n' "$*"; }; fail(){ printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; INSTALL_DIR="${CCR_SWITCH_INSTALL_DIR:-$HOME/.local/share/ccr-switch}"; CONFIG_DIR="$HOME/.config/ccr-switch"; CREDS_FILE="$CONFIG_DIR/credentials.json"; CONFIG_FILE="$CONFIG_DIR/config.json"; MODE=install
+while [[ $# -gt 0 ]]; do case "$1" in --reinstall) MODE=install;; --ccr-switch-on|--start-only) MODE=start;; --help|-h) printf '用法：bash install.sh [--reinstall|--ccr-switch-on]\n'; exit 0;; *) fail "未知参数：$1";; esac; shift; done
+[[ "$MODE" != start ]] || exec "$INSTALL_DIR/scripts/ccr-switch-on"
+command -v node >/dev/null 2>&1 || fail '未找到 Node.js'; SYSTEMD_MODE="${CCR_SWITCH_USE_SYSTEMD:-0}"; [[ "$SYSTEMD_MODE" != 1 ]] || command -v systemctl >/dev/null 2>&1 || fail '未找到 systemctl'; umask 077
+# 在任何创建、chmod、锁或清理前，不跟随 symlink 验证全部内部父路径。
+SYSTEMD_DIR="$HOME/.config/systemd"; UNIT_DIR="$SYSTEMD_DIR/user"
+node - "$CONFIG_DIR" "$INSTALL_DIR" "$INSTALL_DIR/scripts" "$SYSTEMD_DIR" "$UNIT_DIR" <<'NODE' || fail '路径边界非法：存在 symlink、非目录或非当前用户所有'
+const fs=require('fs'),path=require('path'),uid=process.getuid();
+for(const target of process.argv.slice(2)){let cur=path.parse(path.resolve(target)).root;for(const part of path.resolve(target).slice(cur.length).split(path.sep).filter(Boolean)){cur=path.join(cur,part);try{const s=fs.lstatSync(cur);if(s.isSymbolicLink()||!s.isDirectory()||s.uid!==uid)process.exit(1)}catch(e){if(e.code==='ENOENT')break;throw e}}}
+NODE
+mkdir -p "$CONFIG_DIR" "$INSTALL_DIR/scripts"; [[ "$SYSTEMD_MODE" != 1 ]] || mkdir -p "$UNIT_DIR"; chmod 700 "$CONFIG_DIR"
+node - "$CONFIG_DIR" "$INSTALL_DIR" "$INSTALL_DIR/scripts" <<'NODE' || fail '创建后的路径边界验证失败'
+const fs=require('fs');for(const p of process.argv.slice(2)){const s=fs.lstatSync(p);if(s.isSymbolicLink()||!s.isDirectory()||s.uid!==process.getuid())process.exit(1)}
+NODE
+guard_file(){ node -e 'const fs=require("fs"),p=process.argv[1],strict=process.argv[2]==="1";try{const s=fs.lstatSync(p);if(s.isSymbolicLink()||!s.isFile()||s.uid!==process.getuid()||(strict&&(s.mode&0o077)!==0))process.exit(1)}catch(e){if(e.code!=="ENOENT")throw e}' "$1" "${2:-0}" || fail '正式目标非法：必须是当前用户所有的普通文件且不得为 symlink'; }
+for f in "$CREDS_FILE:1" "$CONFIG_FILE:1" "$INSTALL_DIR/proxy.js:0" "$INSTALL_DIR/config.example.json:0" "$INSTALL_DIR/presets.example.json:0" "$INSTALL_DIR/VERSION:0" "$INSTALL_DIR/scripts/ccr-switch-on:0" "$INSTALL_DIR/scripts/ccr-switch-off:0" "$INSTALL_DIR/scripts/ccr-switch-status:0" "$INSTALL_DIR/ccr-switch.service:0" "$UNIT_DIR/ccr-switch.service:0"; do guard_file "${f%:*}" 0; done
+LOCK_DIR="$CONFIG_DIR/.ccr-switch-install.lock"; lock_owned=0
+proc_starttime(){ [[ "$1" =~ ^[0-9]+$ && -r "/proc/$1/stat" ]] || return 1; node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8"),i=s.lastIndexOf(") "),f=s.slice(i+2).split(" ");process.stdout.write(f[19]||"")' "/proc/$1/stat"; }
+release_lock(){
+  if [[ "$lock_owned" == 1 && -d "$LOCK_DIR" && ! -L "$LOCK_DIR" && -f "$LOCK_DIR/owner" && ! -L "$LOCK_DIR/owner" ]]; then
+    read -r p s n <"$LOCK_DIR/owner" || true
+    if [[ "$p" == "$$" && "$s" == "${start:-}" && "$n" == "${nonce:-}" ]]; then rm -f "$LOCK_DIR/owner"; rmdir "$LOCK_DIR" 2>/dev/null || true; fi
   fi
-  # 杀掉旧实例
-  if pgrep -f "node.*proxy.js.*3456" >/dev/null 2>&1; then
-    info "停止旧 ccr-switch 进程..."
-    fuser -k 3456/tcp 2>/dev/null || true
-    sleep 1
-  fi
-  # 启动
-  nohup node "${SCRIPT_DIR}/proxy.js" 3456 > /tmp/proxy.log 2>&1 &
-  sleep 2
-  if pgrep -f "node.*proxy.js.*3456" >/dev/null 2>&1; then
-    ok "ccr-switch 代理已运行 (PID $(pgrep -f 'node.*proxy.js.*3456' | head -1), 端口 3456)"
-  else
-    err "代理启动失败,日志: tail /tmp/proxy.log"
-    exit 1
-  fi
-  # 部署 systemd 单元(若可用)
-  if [[ -f "${SCRIPT_DIR}/scripts/ccr-switch.service" ]]; then
-    info "部署 systemd 单元..."
-    install -m 644 "${SCRIPT_DIR}/scripts/ccr-switch.service" /etc/systemd/system/ccr-switch.service 2>/dev/null || warn "无法部署 systemd 单元(可能无 root)"
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable ccr-switch.service 2>/dev/null || true
-    ok "systemd 单元已部署(ccr-switch.service)"
-  fi
-  exit 0
-fi
-
-# ── 1. 检查 Node.js 运行时 ─────────────────────────────────────────────────
-if ! command -v node &>/dev/null; then
-  err "未找到 node,无法继续"
-  exit 1
-fi
-ok "Node.js 已就绪 ($(node -v))"
-
-# ── v2.0.0 提示: claude-code-router 依赖检查 ────────────────────────────────
-# proxy.js 已经是独立路由引擎,不再需要 @musistudio/claude-code-router。
-# 如果 ~/.claude-code-router 仍存在(历史遗留),不影响功能但占用 2.9GB,
-# 建议手动清理: rm -rf ~/.claude-code-router && npm uninstall -g @musistudio/claude-code-router
-if [[ -d "${HOME}/.claude-code-router" ]] || command -v ccr &>/dev/null; then
-  warn "检测到历史遗留的 claude-code-router 目录/CLI (ccr-switch v2.0.0 已不再需要)"
-  warn "如需清理(可选):"
-  warn "  npm uninstall -g @musistudio/claude-code-router"
-  warn "  rm -rf ~/.claude-code-router"
-  warn "  rm -f /usr/local/bin/ccr"
-  warn "  rm -f /usr/local/bin/ccr-switch-start"
-fi
-
-# ── 4. 部署 presets.json (从模板复制) ─────────────────────────────────────
-PRESETS_FILE="${SCRIPT_DIR}/presets.json"
-if [[ ! -f "${PRESETS_FILE}" && -f "${SCRIPT_DIR}/presets.example.json" ]]; then
-  info "首次安装:从 presets.example.json 复制为 presets.json"
-  cp "${SCRIPT_DIR}/presets.example.json" "${PRESETS_FILE}"
-  ok "presets.json 已创建(请勿提交到 git)"
-fi
-if [[ -f "${PRESETS_FILE}" ]]; then
-  chmod 600 "${PRESETS_FILE}"
-  ok "presets.json 权限已设为 600"
-fi
-
-# ── 5. 管理 ~/.claude/dev-flow/credentials.json ────────────────────────────
-DEVFLOW_DIR="${HOME}/.claude/dev-flow"
-CREDS_FILE="${DEVFLOW_DIR}/credentials.json"
-mkdir -p "${DEVFLOW_DIR}"
-
-# 检测已有真 key(从旧 proxy.js 提取 mm key 用于迁移)
-OLD_MM_KEY=""
-if [[ -f "${SCRIPT_DIR}/proxy.js" ]] && grep -qE "sk-cp-" "${SCRIPT_DIR}/proxy.js"; then
-  OLD_MM_KEY=$(grep -oE "sk-cp-[A-Za-z0-9_-]+" "${SCRIPT_DIR}/proxy.js" | head -1 || true)
-fi
-
-# 读现有 credentials(若存在)
-declare -A CREDS
-if [[ -f "${CREDS_FILE}" ]]; then
-  while IFS="=" read -r k v; do
-    CREDS["$k"]="$v"
-  done < <(jq -r 'to_entries | .[] | "\(.key)=\(.value)"' "${CREDS_FILE}" 2>/dev/null || true)
-fi
-
-# 迁移:从旧 proxy.js 提取的 mm key,若 credentials.json 还没有,自动填入
-if [[ -n "$OLD_MM_KEY" && -z "${CREDS[mm_key]:-}" ]]; then
-  info "检测到旧 proxy.js 含 mm key,自动迁移到 credentials.json"
-  CREDS[mm_key]="$OLD_MM_KEY"
-fi
-
-# 检查缺失的 key,交互式提示
-prompt_for_key() {
-  local key_name="$1"
-  local prompt_msg="$2"
-  local current_val="${CREDS[$key_name]:-}"
-  if [[ -n "$current_val" ]]; then
-    info "$key_name 已存在,跳过 (长度: ${#current_val})"
-    return 0
-  fi
-  echo ""
-  echo -e "  ${YELLOW}$prompt_msg${NC}"
-  echo -e "  ${YELLOW}(直接回车跳过,稍后可手动编辑 ${CREDS_FILE})${NC}"
-  read -r -s input
-  if [[ -n "$input" ]]; then
-    CREDS["$key_name"]="$input"
-    ok "已保存 $key_name"
-  else
-    warn "跳过 $key_name(脚本会正常运行,但对应 provider 不可用)"
-  fi
+  lock_owned=0
 }
-
-info "检查 ~/.claude/dev-flow/credentials.json 中的 API key..."
-prompt_for_key "ds_key" "请输入 DeepSeek API key (sk-...):"
-prompt_for_key "mm_key" "请输入 MiniMax API key (sk-cp-...):"
-prompt_for_key "bd_key" "请输入 Baidu Qianfan API key (bce-v3/...):"
-
-# 写回 credentials.json
-{
-  echo "{"
-  first=1
-  for k in ds_key mm_key bd_key; do
-    if [[ -n "${CREDS[$k]:-}" ]]; then
-      if [[ $first -eq 0 ]]; then echo ","; fi
-      first=0
-      printf '  "%s": "%s"' "$k" "${CREDS[$k]}"
+acquire_lock(){
+  local attempts=0
+  while (( attempts++ < 100 )); do
+    nonce="$$.$RANDOM.$RANDOM"; publish="$CONFIG_DIR/.ccr-switch-lock-publish.$nonce"
+    if mkdir -m 700 "$publish" 2>/dev/null; then
+      start="$(proc_starttime "$$")" || { rmdir "$publish"; fail '无法读取安装进程身份'; }
+      printf '%s %s %s\n' "$$" "$start" "$nonce" >"$publish/owner"; chmod 600 "$publish/owner"
+      if [[ -n "${CCR_SWITCH_TEST_LOCK_BEFORE_PUBLISH:-}" ]]; then : >"$CCR_SWITCH_TEST_LOCK_BEFORE_PUBLISH"; while [[ ! -e "${CCR_SWITCH_TEST_LOCK_PUBLISH_CONTINUE:-}" ]]; do sleep .02; done; fi
+      if mv -T "$publish" "$LOCK_DIR" 2>/dev/null; then
+        lock_owned=1
+        if [[ -n "${CCR_SWITCH_TEST_LOCK_PUBLISHED:-}" ]]; then : >"$CCR_SWITCH_TEST_LOCK_PUBLISHED"; while [[ ! -e "${CCR_SWITCH_TEST_LOCK_CONTINUE:-}" ]]; do sleep .02; done; fi
+        return 0
+      fi
+      rm -f "$publish/owner"; rmdir "$publish" 2>/dev/null || true
+    fi
+    if [[ -e "$LOCK_DIR" ]]; then
+      [[ ! -L "$LOCK_DIR" && -d "$LOCK_DIR" ]] || fail '安装锁路径非法，拒绝继续'
+      # owner 缺失/不完整绝不视为 stale，有限重试确认发布状态。
+      [[ ! -L "$LOCK_DIR/owner" ]] || fail '安装锁 owner 为 symlink，拒绝继续'
+      if [[ ! -f "$LOCK_DIR/owner" ]]; then sleep .03; continue; fi
+      owner_pid=''; owner_start=''; owner_nonce=''; read -r owner_pid owner_start owner_nonce <"$LOCK_DIR/owner" || { sleep .03; continue; }
+      [[ -n "$owner_nonce" ]] || { sleep .03; continue; }
+      current_start="$(proc_starttime "$owner_pid" 2>/dev/null || true)"
+      if [[ -n "$current_start" && "$current_start" == "$owner_start" ]]; then fail '另一个 ccr-switch 安装正在进行，安装锁被占用'; fi
+      stale="$CONFIG_DIR/.ccr-switch-lock-stale.$nonce"
+      if mv -T "$LOCK_DIR" "$stale" 2>/dev/null; then rm -f "$stale/owner"; rmdir "$stale" 2>/dev/null || true; fi
+      continue
     fi
   done
-  echo ""
-  echo "}"
-} > "${CREDS_FILE}"
-chmod 600 "${CREDS_FILE}"
-ok "credentials.json 已写入(权限 600)"
-
-# ── 6. v2.1.0 从 config.example.json 生成 config.json 并注入真 key ──────────
-# proxy.js 不再有占位符。所有 provider 配置走 config.json,真 key 从
-# ~/.claude/dev-flow/credentials.json 读,注入到 config.example.json 的占位符上。
-CONFIG_FILE="${SCRIPT_DIR}/config.json"
-CONFIG_EXAMPLE="${SCRIPT_DIR}/config.example.json"
-if [[ -f "${CONFIG_EXAMPLE}" ]]; then
-  # 若 config.json 已有真 key 且非 --reinstall,备份以防覆盖丢失
-  if [[ -f "${CONFIG_FILE}" && "$MODE" != "reinstall" ]]; then
-    if grep -qE 'sk-YOUR_|bce-v3-YOUR_' "${CONFIG_FILE}" 2>/dev/null; then
-      : # 还是占位符模式,允许覆盖
-    elif grep -qE '^[^"]*"api_key":\s*"(sk-[A-Za-z0-9_-]{15,}|bce-v3/[A-Za-z0-9_-]{15,})' "${CONFIG_FILE}"; then
-      info "config.json 已含真 key,跳过生成(用 --reinstall 强制)"
-    fi
-  fi
-
-  cp "${CONFIG_EXAMPLE}" "${CONFIG_FILE}.bak.$(date +%s)" 2>/dev/null || true
-  cp "${CONFIG_EXAMPLE}" "${CONFIG_FILE}"
-  # 注入真 key
-  if [[ -n "${CREDS[ds_key]:-}" ]]; then
-    sed -i "s|sk-YOUR_DEEPSEEK_API_KEY|${CREDS[ds_key]}|g" "${CONFIG_FILE}"
-  fi
-  if [[ -n "${CREDS[mm_key]:-}" ]]; then
-    sed -i "s|sk-YOUR_MINIMAX_API_KEY|${CREDS[mm_key]}|g" "${CONFIG_FILE}"
-  fi
-  if [[ -n "${CREDS[bd_key]:-}" ]]; then
-    sed -i "s|bce-v3-YOUR_BAIDU_QIANFAN_KEY|${CREDS[bd_key]}|g" "${CONFIG_FILE}"
-  fi
-  chmod 600 "${CONFIG_FILE}"
-  ok "config.json 已生成(权限 600,真 key 已注入)"
-fi
-
-# ── 7. 部署 ccr-switch-off / ccr-switch-on 到 /usr/local/bin ──────────────
-info "部署 ccr-switch-off / ccr-switch-on / ccr-switch-status..."
-SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
-if [[ -d "${SCRIPTS_DIR}" ]]; then
-  for s in ccr-switch-off ccr-switch-on ccr-switch-status; do
-    src="${SCRIPTS_DIR}/${s}"
-    dst="/usr/local/bin/${s}"
-    if [[ -f "$src" ]]; then
-      install -m 755 "$src" "$dst"
-      ok "已安装 $dst"
-    else
-      warn "未找到 $src,跳过"
-    fi
-  done
-fi
-
-# ── 8. 追加 .bashrc 段 (由 ccr-switch-on 接管 marker 块) ──────────────────
-BASHRC="${HOME}/.bashrc"
-MARKER_BEGIN="# >>> ccr-switch managed block (do not edit) >>>"
-MARKER_END="# <<< ccr-switch managed block <<<"
-
-# ccr-switch-on 会自动维护此 block。install.sh 首次安装时,若 block 不存在,
-# 用 presets.json 的 ccr 段初始化;若已存在,跳过(off/on 已配置好)
-if grep -qF "${MARKER_BEGIN}" "${BASHRC}" 2>/dev/null; then
-  info ".bashrc managed 块已存在,跳过初始化(由 ccr-switch-on 维护)"
-else
-  info "初始化 .bashrc managed 块为 ccr 模式..."
-  ccr_block=$(jq -r '.ccr.env | to_entries | .[] | "export " + .key + "=" + (.value | tostring)' "${PRESETS_FILE}" 2>/dev/null || true)
-  {
-    echo ""
-    echo "${MARKER_BEGIN}"
-    echo "# 当前模式: ccr-switch 代理(直连用 ccr-switch-off [1/2/3/C])"
-    echo "${ccr_block}"
-    echo "${MARKER_END}"
-  } >> "${BASHRC}"
-  ok ".bashrc managed 块已初始化"
-  info "执行 'source ~/.bashrc' 或新开 shell 以生效"
-fi
-
-# ── 9. 启动 ccr-switch 代理 ────────────────────────────────────────────────
-info "启动 ccr-switch 代理..."
-
-# 杀掉旧 proxy.js(它仍依赖被替换的 mm key,必须重启)
-if pgrep -f "node.*proxy.js.*3456" > /dev/null 2>&1; then
-  info "停止旧 ccr-switch 进程..."
-  fuser -k 3456/tcp 2>/dev/null || true
-  sleep 1
-fi
-
-# 直接启动 proxy.js(v2.1.0 独立路由 + config.json 驱动,不走任何 ccr cli)
-nohup node "${SCRIPT_DIR}/proxy.js" 3456 > /tmp/proxy.log 2>&1 &
-sleep 2
-
-if pgrep -f "node.*proxy.js.*3456" > /dev/null 2>&1; then
-  ok "ccr-switch 代理已运行 (PID $(pgrep -f 'node.*proxy.js.*3456' | head -1), 端口 3456)"
-else
-  warn "代理可能未启动,日志: tail /tmp/proxy.log"
-fi
-
-# ── 10. 部署 systemd 服务单元 (v1.3.1) ────────────────────────────────────
-# 解决 ccr-switch 依赖 cron @reboot 启动的问题:
-# 阿里云服务器重启后,systemd 不会自动触发 cron @reboot 任务,
-# 导致 ccr-switch 不能自动拉起(用户报告的真实问题)
-if [[ -f "${SCRIPT_DIR}/scripts/ccr-switch.service" ]]; then
-  info "部署 systemd 单元 (ccr-switch.service)..."
-  if install -m 644 "${SCRIPT_DIR}/scripts/ccr-switch.service" /etc/systemd/system/ccr-switch.service 2>/dev/null; then
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable ccr-switch.service 2>/dev/null || true
-    ok "systemd 单元已部署并 enable,服务器重启后将自动拉起 ccr-switch"
-  else
-    warn "无法部署 systemd 单元(需要 root 权限,fallback 到 cron @reboot)"
-  fi
-fi
-
-# ── Done ──────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║              ccr-switch v2.1.0 安装完成!                   ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${CYAN}代理端点:${NC}  http://127.0.0.1:3456"
-echo ""
-echo -e "  ${CYAN}可用别名:${NC}"
-echo -e "    /model ds,v4pro     DeepSeek V4 Pro    (默认, 思考, web)"
-echo -e "    /model ds,v4flash   DeepSeek V4 Flash  (后台任务)"
-echo -e "    /model mm,m3        MiniMax M3         (测试/文档/提交)"
-echo -e "    /model bd,glm5.2    Baidu Qianfan GLM-5.2 (测试/文档/提交)"
-echo ""
-echo -e "  ${CYAN}代理 ↔ 直连切换:${NC}"
-echo -e "    ccr-switch-off [1/2/3/C]   关闭代理,切到直连"
-echo -e "    ccr-switch-on              恢复 ccr 代理"
-echo -e "    直连预设: [1] ds,v4pro  [2] mm,m3  [3] bd,glm5.2  [C] 自定义"
-echo ""
-echo -e "  ${CYAN}凭据管理:${NC}"
-echo -e "    真 key 存储于 ~/.claude/dev-flow/credentials.json (chmod 600)"
-echo -e "    编辑: vi ~/.claude/dev-flow/credentials.json"
-echo -e "    重新部署: bash $(basename "$0")"
-echo ""
-echo -e "  ${YELLOW}提示:${NC} 新开会话或执行 'source ~/.bashrc' 以让环境变量生效"
-echo ""
+  fail '安装锁状态不完整或竞争繁忙，拒绝继续'
+}
+acquire_lock
+for key_file in "$CREDS_FILE" "$CONFIG_FILE"; do if [[ -f "$key_file" ]]; then chmod 600 "$key_file"; guard_file "$key_file" 1; info "已收紧 $(basename "$key_file") 权限为 0600"; fi; done
+node - "$CONFIG_DIR" "$INSTALL_DIR" <<'NODE' || fail '命名空间含 symlink 或非预期 inode，拒绝清理'
+const fs=require('fs'),path=require('path');for(const [d,re] of [[process.argv[2],/^\.ccr-switch-(credentials|config)\./],[process.argv[3],/^\.ccr-switch-transaction\./]])for(const n of fs.readdirSync(d)){if(!re.test(n))continue;const s=fs.lstatSync(path.join(d,n));if(s.isSymbolicLink()||(!s.isFile()&&!s.isDirectory()))process.exit(1)}
+NODE
+node - "$INSTALL_DIR" <<'NODE' || fail 'stale 事务结构或 inode 非法，拒绝清理'
+const fs=require('fs'),path=require('path'),uid=process.getuid(),dirs=new Set(['','backup','stage','stage/app','stage/app/scripts']),files=/^(backup\/\d+|stage\/app\/(proxy\.js|config\.example\.json|presets\.example\.json|VERSION|ccr-switch\.service|scripts\/(ccr-switch-on|ccr-switch-off|ccr-switch-status)))$/;
+function clean(root){const base=fs.lstatSync(root),dev=base.dev;if(base.isSymbolicLink()||!base.isDirectory()||base.uid!==uid)throw Error('root');const entries=[];function validate(d,rel){for(const n of fs.readdirSync(d)){const p=path.join(d,n),r=path.join(rel,n),s=fs.lstatSync(p);if(s.uid!==uid||s.dev!==dev||s.isSymbolicLink())throw Error('inode');if(s.isDirectory()){if(!dirs.has(r))throw Error('extra-dir');entries.push([p,true]);validate(p,r)}else{if(!s.isFile())throw Error('special');if(!files.test(r))throw Error('extra-file');entries.push([p,false])}}}validate(root,'');for(const [p,isDir] of entries.reverse())isDir?fs.rmdirSync(p):fs.unlinkSync(p);fs.rmdirSync(root)}
+for(const n of fs.readdirSync(process.argv[2]))if(/^\.ccr-switch-transaction\./.test(n))clean(path.join(process.argv[2],n));
+NODE
+find "$CONFIG_DIR" -maxdepth 1 -type f \( -name '.ccr-switch-credentials.*' -o -name '.ccr-switch-config.*' \) -delete
+TXN="$(mktemp -d "$INSTALL_DIR/.ccr-switch-transaction.XXXXXX")"; BACKUP="$TXN/backup"; STAGE="$TXN/stage"; mkdir -p "$BACKUP" "$STAGE/app/scripts"
+KEY_CRED_STAGE="$(mktemp "$CONFIG_DIR/.ccr-switch-credentials.XXXXXX")"; KEY_CONFIG_STAGE="$(mktemp "$CONFIG_DIR/.ccr-switch-config.XXXXXX")"
+TARGETS=(); STAGED=(); EXISTED=(); BACKUPS=(); BACKUP_META=(); ORIGINAL_MODES=(); COMMITTED_IDS=(); transaction_active=1; manager_touched=0; restore_mismatch=0
+cleanup(){ rm -f "$KEY_CRED_STAGE" "$KEY_CONFIG_STAGE"; local i b; for ((i=0;i<${#BACKUPS[@]};i++)); do b="${BACKUPS[$i]}"; node -e 'try{const fs=require("fs"),crypto=require("crypto"),path=require("path"),p=process.argv[1],want=process.argv[2],fd=fs.openSync(p,"r"),s=fs.fstatSync(fd),buf=fs.readFileSync(fd),d=fs.lstatSync(path.dirname(p));fs.closeSync(fd);const got=[s.dev,s.ino,s.uid,s.mode&511,s.size,d.dev,d.ino,crypto.createHash("sha256").update(buf).digest("hex")].join(":");if(got===want)fs.unlinkSync(p)}catch(e){}' "$b" "${BACKUP_META[$i]:-}"; done; [[ ! -d "$TXN" ]] || node -e 'const fs=require("fs");fs.rmSync(process.argv[1],{recursive:true})' "$TXN"; release_lock; }
+restore_nonkey(){ local i target backup id current; for ((i=${#COMMITTED_IDS[@]}-1;i>=0;i--)); do target="${TARGETS[$i]}"; backup="${BACKUPS[$i]}"; current="$(node -e 'try{const s=require("fs").lstatSync(process.argv[1]);if(s.isSymbolicLink()||!s.isFile()||s.uid!==process.getuid())process.exit(1);process.stdout.write(s.dev+":"+s.ino)}catch(e){process.exit(1)}' "$target" 2>/dev/null || true)"; id="${COMMITTED_IDS[$i]}"; if [[ "$current" != "$id" ]]; then printf '[ERROR] 高严重度：正式目标状态不一致，拒绝触碰未知 inode\n' >&2; restore_mismatch=1; continue; fi; if [[ "${EXISTED[$i]}" == 1 ]]; then if ! node -e 'const fs=require("fs"),crypto=require("crypto"),path=require("path"),p=process.argv[1],t=process.argv[2],want=process.argv[3],orig=Number(process.argv[4]);if(typeof fs.constants.O_NOFOLLOW!=="number")process.exit(4);const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),s=fs.fstatSync(fd),b=fs.readFileSync(fd),d=fs.lstatSync(path.dirname(p)),got=[s.dev,s.ino,s.uid,s.mode&511,s.size,d.dev,d.ino,crypto.createHash("sha256").update(b).digest("hex")].join(":");if(got!==want)process.exit(3);fs.fchmodSync(fd,orig);const s2=fs.fstatSync(fd);if(s2.dev!==s.dev||s2.ino!==s.ino||s2.uid!==s.uid||s2.size!==s.size||(s2.mode&511)!==orig)process.exit(3);const lp=fs.lstatSync(p),lt=fs.lstatSync(t);if(lp.isSymbolicLink()||lp.dev!==s.dev||lp.ino!==s.ino||lt.isSymbolicLink()||!lt.isFile()||lt.dev+":"+lt.ino!==process.argv[5])process.exit(3);fs.closeSync(fd);fs.renameSync(p,t)' "$backup" "$target" "${BACKUP_META[$i]}" "${ORIGINAL_MODES[$i]}" "$id"; then printf '[ERROR] 高严重度：backup 状态不一致，拒绝安装未知内容\n' >&2; restore_mismatch=1; continue; fi; else rm -f "$target"; if ! node -e 'const fs=require("fs"),crypto=require("crypto"),path=require("path"),p=process.argv[1],want=process.argv[2],fd=fs.openSync(p,"r"),s=fs.fstatSync(fd),b=fs.readFileSync(fd),d=fs.lstatSync(path.dirname(p));fs.closeSync(fd);const got=[s.dev,s.ino,s.uid,s.mode&511,s.size,d.dev,d.ino,crypto.createHash("sha256").update(b).digest("hex")].join(":");if(got!==want)process.exit(3);fs.unlinkSync(p)' "$backup" "${BACKUP_META[$i]}"; then printf '[ERROR] 高严重度：backup 状态不一致，拒绝删除未知 inode\n' >&2; restore_mismatch=1; fi; fi; done; }
+rollback_once(){ local requested="${1:-1}" reload_failed=0; [[ "$transaction_active" == 1 ]] || return "$requested"; transaction_active=0; trap - EXIT; trap '' INT TERM; [[ ! -d "$TXN" ]] || restore_nonkey; if [[ "$restore_mismatch" == 1 ]]; then if [[ "$SYSTEMD_MODE" == 1 && "$manager_touched" == 1 ]]; then if ! systemctl --user daemon-reload >/dev/null 2>&1; then reload_failed=1; printf '[ERROR] 高严重度：systemd manager 恢复 reload 失败，内存状态可能不一致\n' >&2; fi; fi; cleanup; return 3; fi; if [[ "$SYSTEMD_MODE" == 1 && "$manager_touched" == 1 ]]; then systemctl --user daemon-reload >/dev/null 2>&1 || reload_failed=1; fi; cleanup; if [[ "$reload_failed" == 1 ]]; then printf '[ERROR] 高严重度：磁盘旧 unit 已恢复，但 systemd manager 恢复 reload 失败\n' >&2; return 2; fi; return "$requested"; }
+on_exit(){ local status=$?; if [[ "$transaction_active" == 1 ]]; then rollback_once "$status"; exit $?; fi; exit "$status"; }
+trap on_exit EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+xa_key=''; if [[ -f "$CREDS_FILE" ]]; then xa_key="$(node -e 'try{const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(typeof v.xa_key==="string"?v.xa_key:"")}catch(e){process.exit(1)}' "$CREDS_FILE")" || fail '凭据 JSON 非法'; fi
+if [[ -z "$xa_key" ]]; then printf '请输入 xa_key（输入隐藏）：' >&2; IFS= read -r -s xa_key; printf '\n' >&2; fi; [[ -n "$xa_key" ]] || fail 'xa_key 不能为空'
+node -e 'const fs=require("fs"),k=fs.readFileSync(0,"utf8").replace(/\n$/,"");fs.writeFileSync(process.argv[1],JSON.stringify({xa_key:k},null,2)+"\n",{mode:0o600})' "$KEY_CRED_STAGE" <<<"$xa_key"
+node -e 'const fs=require("fs"),k=fs.readFileSync(0,"utf8").replace(/\n$/,""),c=JSON.parse(fs.readFileSync(process.argv[2],"utf8")),p=c.Providers.find(x=>x.name==="xa");if(!p)throw Error("示例配置缺少 xa provider");p.api_key=k;c.Providers=[p];const bindings={};for(const [wire,target] of Object.entries(c.ModelBindings||{}))if(target.startsWith("xa,"))bindings[wire]=target;c.ModelBindings=bindings;delete c.Router;fs.writeFileSync(process.argv[1],JSON.stringify(c,null,2)+"\n",{mode:0o600})' "$KEY_CONFIG_STAGE" "$SCRIPT_DIR/config.example.json" <<<"$xa_key"
+chmod 600 "$KEY_CRED_STAGE" "$KEY_CONFIG_STAGE"; node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$KEY_CRED_STAGE"; node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$KEY_CONFIG_STAGE"
+install -m 755 "$SCRIPT_DIR/proxy.js" "$STAGE/app/proxy.js"; install -m 644 "$SCRIPT_DIR/config.example.json" "$STAGE/app/config.example.json"; install -m 644 "$SCRIPT_DIR/presets.example.json" "$STAGE/app/presets.example.json"; install -m 644 "$SCRIPT_DIR/VERSION" "$STAGE/app/VERSION"
+for name in ccr-switch-on ccr-switch-off ccr-switch-status; do install -m 755 "$SCRIPT_DIR/scripts/$name" "$STAGE/app/scripts/$name"; done
+node -e 'const fs=require("fs");let s=fs.readFileSync(process.argv[1],"utf8");s=s.replaceAll("@INSTALL_DIR@",process.argv[2]).replaceAll("@HOME@",process.env.HOME);fs.writeFileSync(process.argv[3],s,{mode:0o600})' "$SCRIPT_DIR/scripts/ccr-switch.service" "$INSTALL_DIR" "$STAGE/app/ccr-switch.service"
+add_nonkey(){ guard_file "$1" 0; TARGETS+=("$1"); STAGED+=("$2"); local parent backup meta original_mode i=$((${#TARGETS[@]}-1)); parent="$(dirname "$1")"; mkdir -p "$parent"; backup="$(mktemp "$parent/.ccr-switch-backup.XXXXXX")"; BACKUPS+=("$backup"); if [[ -f "$1" ]]; then EXISTED+=(1); original_mode="$(node -e 'process.stdout.write(String(require("fs").lstatSync(process.argv[1]).mode&511))' "$1")"; cp -p "$1" "$backup"; else EXISTED+=(0); original_mode=0; : >"$backup"; fi; ORIGINAL_MODES+=("$original_mode"); chmod 400 "$backup"; meta="$(node -e 'const fs=require("fs"),crypto=require("crypto"),path=require("path"),p=process.argv[1],fd=fs.openSync(p,"r"),s=fs.fstatSync(fd),b=fs.readFileSync(fd),d=fs.lstatSync(path.dirname(p));fs.closeSync(fd);process.stdout.write([s.dev,s.ino,s.uid,s.mode&511,s.size,d.dev,d.ino,crypto.createHash("sha256").update(b).digest("hex")].join(":"))' "$backup")"; BACKUP_META+=("$meta"); }
+for rel in proxy.js config.example.json presets.example.json VERSION scripts/ccr-switch-on scripts/ccr-switch-off scripts/ccr-switch-status ccr-switch.service; do add_nonkey "$INSTALL_DIR/$rel" "$STAGE/app/$rel"; done
+UNIT_FILE="$HOME/.config/systemd/user/ccr-switch.service"; [[ "$SYSTEMD_MODE" != 1 ]] || add_nonkey "$UNIT_FILE" "$STAGE/app/ccr-switch.service"
+for ((i=0;i<${#TARGETS[@]};i++)); do guard_file "${TARGETS[$i]}" 0; cp -p "${STAGED[$i]}" "${TARGETS[$i]}"; COMMITTED_IDS+=("$(node -e 'const s=require("fs").lstatSync(process.argv[1]);process.stdout.write(s.dev+":"+s.ino)' "${TARGETS[$i]}")"); done
+if [[ "$SYSTEMD_MODE" == 1 ]]; then manager_touched=1; if [[ -n "${CCR_SWITCH_TEST_RELOAD_READY:-}" ]]; then : >"$CCR_SWITCH_TEST_RELOAD_READY"; while [[ ! -e "${CCR_SWITCH_TEST_RELOAD_CONTINUE:-}" ]]; do sleep .01; done; fi; if ! systemctl --user daemon-reload >/dev/null 2>&1; then rollback_once 1; status=$?; [[ "$status" == 2 ]] || printf '[ERROR] systemd user unit 重新加载失败，已恢复旧状态\n' >&2; exit "$status"; fi; fi
+if [[ "${CCR_SWITCH_TEST_FAIL_CONFIG:-0}" == 1 ]]; then rollback_once 1; status=$?; printf '[ERROR] 模拟配置生成失败，已恢复旧状态\n' >&2; exit "$status"; fi
+if [[ -n "${CCR_SWITCH_TEST_READY:-}" ]]; then : >"$CCR_SWITCH_TEST_READY"; while [[ ! -e "${CCR_SWITCH_TEST_CONTINUE:-}" ]]; do sleep 0.02; done; fi
+if [[ "${CCR_SWITCH_TEST_FAIL_AFTER_READY:-0}" == 1 ]]; then rollback_once 1; exit $?; fi
+if [[ -n "${CCR_SWITCH_TEST_BEFORE_CRED:-}" ]]; then : >"$CCR_SWITCH_TEST_BEFORE_CRED"; while [[ ! -e "${CCR_SWITCH_TEST_AFTER_CRED:-}" ]]; do sleep .01; done; fi
+guard_file "$CREDS_FILE" 1; guard_file "$CONFIG_FILE" 1
+mv -f "$KEY_CRED_STAGE" "$CREDS_FILE"
+if [[ -n "${CCR_SWITCH_TEST_BEFORE_CONFIG:-}" ]]; then : >"$CCR_SWITCH_TEST_BEFORE_CONFIG"; while [[ ! -e "${CCR_SWITCH_TEST_AFTER_CONFIG:-}" ]]; do sleep .01; done; fi
+[[ -z "${CCR_SWITCH_TEST_RENAME_DELAY_MS:-}" ]] || sleep "$(node -e 'process.stdout.write(String(Number(process.argv[1])/1000))' "$CCR_SWITCH_TEST_RENAME_DELAY_MS")"; mv -f "$KEY_CONFIG_STAGE" "$CONFIG_FILE"
+transaction_active=0; trap - EXIT INT TERM; cleanup; info 'ccr-switch 已安全安装，凭据与配置已分别原子提交'
+	if [[ "${CCR_SWITCH_SKIP_START:-0}" != 1 ]]; then
+	  if ! "$INSTALL_DIR/scripts/ccr-switch-on"; then
+	    printf '[ERROR] 安装完成但代理启动失败\n' >&2
+	    exit 2
+	  fi
+	fi
