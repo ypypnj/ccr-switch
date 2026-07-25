@@ -50,7 +50,19 @@
 <body>
   <article>
     <h1>更新日志 (Changelog)</h1>
-    <p class="meta">项目: ccr-switch · 当前版本: v2.4.2 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-21</p>
+    <p class="meta">项目: ccr-switch · 当前版本: v2.4.3 · 遵循 Keep a Changelog 标准 · 生成时间: 2026-07-25</p>
+
+    <!-- v2.4.3 -->
+    <h2 id="v2.4.3">v2.4.3 — 2026-07-25</h2>
+    <h3>Added</h3>
+    <ul>
+      <li><strong>Message-ID execution receipt</strong>: 流式响应从 <code>message_start.message.id</code>、非流式响应从顶层 <code>id</code> 记录可查询的 execution receipt；新增 loopback-only <code>GET /v1/receipts/by-message-id/:id</code></li>
+    </ul>
+    <h3>Fixed</h3>
+    <ul>
+      <li><strong>SSE receipt 漏记</strong>: 按 SSE frame 边界和 CRLF 规则解析分块数据，在 receipt 写入成功前延迟提交 HTTP 200；缺失、无效、冲突、上游提前中止和缓冲溢出均 fail-closed 返回 502</li>
+      <li><strong>安装完整性</strong>: 将 <code>lib/receipt-index.js</code> 纳入安装事务、回滚和 symlink/ownership 路径边界验证</li>
+    </ul>
 
     <!-- v2.4.2 -->
     <h2 id="v2.4.2">v2.4.2 — 2026-07-21</h2>

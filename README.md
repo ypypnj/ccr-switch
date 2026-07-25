@@ -1,4 +1,4 @@
-# ccr-switch v2.4.2
+# ccr-switch v2.4.3
 
 Multi-provider model routing for [Claude Code](https://claude.ai/code). A standalone Node.js proxy -- zero external dependencies -- that maps Claude wire model names to configurable upstream providers via Anthropic-compatible endpoints.
 
@@ -9,6 +9,7 @@ Claude Code  →  127.0.0.1:$PORT  →  proxy.js  →  upstream provider
                      (--config config.json)         (ds/mm/xa/...)
 ```
 
+- **v2.4.3**: Captures streaming and non-streaming message IDs before returning HTTP 200, stores execution receipts, and fails closed when a receipt cannot be recorded.
 - **v2.4.2**: Fixes atomic PID-state publication after a healthy proxy start.
 - **v2.4.1**: Runs as a single `proxy.js` file using only Node.js built-ins (`http`, `https`, `fs`, `crypto`).
 - Provider endpoints, API keys, model aliases, and routing bindings all live in one JSON config file.
@@ -141,7 +142,8 @@ All errors are classified by type, with no silent fallback:
 
 | Path | Method | Description |
 |---|---|---|
-| `/v1/messages` | POST | Forward to resolved upstream |
+| `/v1/messages` | POST | Forward to resolved upstream and record its message-ID execution receipt |
+| `/v1/receipts/by-message-id/:id` | GET | Retrieve a process-local execution receipt (loopback clients only) |
 | `/v1/models` | GET | List all available provider+model pairs |
 | `/health` | GET | Health check (`{"status":"ok"}`) |
 
