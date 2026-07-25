@@ -135,6 +135,12 @@ var CONFIG_FINGERPRINT = crypto.createHash('sha256').update(JSON.stringify({
   bindings: MODEL_BINDINGS
 })).digest('hex');
 
+var receiptLib = require('./lib/receipt-index.js');
+var receiptIndex = receiptLib.createReceiptIndex({
+  ttlMs: Number(process.env.CCR_RECEIPT_TTL_MS || 300000),
+  maxEntries: Number(process.env.CCR_RECEIPT_MAX_ENTRIES || 2048)
+});
+
 var thinkCache = {};
 var MAX_CACHE = 30;
 
@@ -199,6 +205,22 @@ function resolveModel(model) {
     if (PROVIDERS[p].models[requested]) matches.push({ providerName: p, provider: PROVIDERS[p], alias: requested, model: PROVIDERS[p].models[requested], binding: requested !== model });
   }
   return matches.length === 1 ? matches[0] : null;
+}
+function executionReceipt(resolved, requestedModel, dispatchId, messageId) {
+  return {
+    receipt_version: 2,
+    receipt_kind: 'execution',
+    requested_model: requestedModel,
+    actual_provider: resolved.providerName,
+    actual_model: resolved.model,
+    dispatch_id: dispatchId,
+    message_id: messageId,
+    config_fingerprint: 'sha256:' + CONFIG_FINGERPRINT
+  };
+}
+function recordMessageReceipt(messageId, resolved, requestedModel, dispatchId) {
+  if (typeof messageId !== 'string' || !/^[-A-Za-z0-9_:.]{1,256}$/.test(messageId)) return { status: 'invalid' };
+  return receiptIndex.put(messageId, executionReceipt(resolved, requestedModel, dispatchId, messageId));
 }
 function receiptHeaders(resolved, requestedModel, dispatchId) {
   return {
@@ -331,20 +353,14 @@ var server = http.createServer(function(req, res) {
         };
 
         var requestTransport = url.protocol === 'http:' ? http : https;
+        var _streamDeferred = false;
         var upstream = requestTransport.request(options, function(upRes) {
           // 上游响应流 error 监听(v1.3.2):网络层 ECONNRESET/EPIPE 不监听会冒泡杀进程
           upRes.on('error', function(e) {
             log('上游响应流错误 code=' + (e.code || 'unknown'));
-            if (isStream && !streamFinished && !res.writableEnded) {
-              streamFinished = true;
-              try {
-                res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":0}}\n\n');
-                res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
-              } catch(_) {}
-              res.end();
-            }
           });
           if (isStream) {
+            _streamDeferred = true;
             if (upRes.statusCode === 429) {
               var retryAfter = retryAfterSeconds(upRes.headers);
               markRateLimited(provName);
@@ -359,10 +375,6 @@ var server = http.createServer(function(req, res) {
               res.writeHead(upRes.statusCode, mergeHeaders({ 'Content-Type': 'application/json', 'Retry-After': String(overloadRetryAfter) }, dispatchHeaders));
               return res.end(JSON.stringify({ error: { type: 'provider_overloaded', message: 'provider overloaded' } }));
             }
-            // v2.3.0: 非 429 错误(401/403/5xx)上游返回的是非 SSE 的 JSON 错误体。
-            // 若按 SSE 转发(res.write 半行),客户端 SSE 解析器拿到裸 JSON,等 \n\n
-            // 终止符永远等不到 → "JSON Parse error: Unexpected EOF"。
-            // 改为丢弃上游 body,返回自洽的非流式 JSON 错误,客户端能看到真实状态码。
             if (upRes.statusCode >= 400) {
               upRes.resume();
               var errBody = JSON.stringify({ error: { type: 'upstream_error', status: upRes.statusCode, message: 'upstream request failed' } });
@@ -372,59 +384,120 @@ var server = http.createServer(function(req, res) {
               return;
             }
             delete upRes.headers['content-length'];
-            res.writeHead(upRes.statusCode, mergeHeaders(upRes.headers, dispatchHeaders));
+            var deferredHeaders = mergeHeaders(upRes.headers, dispatchHeaders);
+            var headersSent = false;
+            var streamFailed = false;
+            var DEFERRED_MAX_BYTES = Number(process.env.CCR_DEFERRED_MAX_BYTES || 65536);
+            var streamMessageId = null;
+            var sseFrames = receiptLib.createSSEFrameCollector();
+            var deferredOutput = '';
             var leftover = '';
             var fullText = '';
             var fallbackInjected = false;
+
+            function failClosed(reason) {
+              if (headersSent) return;
+              headersSent = true;
+              streamFailed = true;
+              _streamDeferred = false;
+              try {
+                var err = JSON.stringify({ error: { type: 'missing_message_receipt', message: reason } });
+                res.writeHead(502, mergeHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(err) }, dispatchHeaders));
+                res.end(err);
+              } catch(_) {}
+              log('STREAM FAIL CLOSED: ' + reason + ' model=' + originalModel);
+            }
+
+            function flushDeferred() {
+              if (headersSent) return;
+              headersSent = true;
+              _streamDeferred = false;
+              res.writeHead(upRes.statusCode, deferredHeaders);
+              if (deferredOutput) {
+                res.write(deferredOutput);
+                deferredOutput = '';
+              }
+            }
+
+            function writeOrDefer(data) {
+              if (headersSent) { res.write(data); } else { deferredOutput += data; }
+            }
+
+            upRes.on('error', function(e) {
+              if (streamFailed) return;
+              if (!headersSent) { failClosed('upstream stream error before message_receipt'); return; }
+              if (res.writableEnded) return;
+              try {
+                res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":0}}\n\n');
+                res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+              } catch(_) {}
+              res.end();
+            });
+
             upRes.on('data', function(chunk) {
-              var text = leftover + chunk.toString();
+              if (streamFailed) return;
+              var rawChunk = chunk.toString();
+              // Scan for message_start while headers are deferred
+              if (streamMessageId === null) {
+                var frames = sseFrames.feed(rawChunk);
+                for (var fi = 0; fi < frames.length && streamMessageId === null; fi++) {
+                  try {
+                    var sseEvent = receiptLib.parseSSEFrameData(frames[fi]);
+                    if (sseEvent && sseEvent.type === 'message_start' && sseEvent.message && sseEvent.message.id) {
+                      streamMessageId = sseEvent.message.id;
+                      var rcpRes = recordMessageReceipt(streamMessageId, resolved, originalModel, dispatchId);
+                      if (rcpRes.status === 'stored' || rcpRes.status === 'idempotent') { flushDeferred(); }
+                      else { failClosed('receipt ' + rcpRes.status); }
+                    }
+                  } catch(e) {}
+                }
+              }
+              // Normal pipeline: signature replacement, line splitting, fallback injection
+              var text = leftover + rawChunk;
               text = text.replace(/"signature":"[^"]+"/g, '"signature":"ccr_"');
               var lines = text.split('\n');
               leftover = lines.pop();
               fullText += lines.join('\n') + '\n';
               // v2.2.0 auto mode 兜底 (streaming 路径):在 message_stop 之前注入 text_delta。
-              // 缓冲策略:把上行 lines 直接 res.write,但先扫一下 lines 里是否有 message_stop
-              // 事件 — 看到就立刻把 fallback 块插在 message_stop 之前,然后原 lines 继续写。
               var processedLines = lines.join('\n') + '\n';
               if (!fallbackInjected && /"type":\s*"thinking"/.test(fullText)) {
-                // 检查当前累积 fullText 是否含非空 text(避免误判)
                 var allTextMatches = fullText.match(/"text"\s*:\s*"([^"]*)"/g) || [];
                 var hasNonEmptyText = allTextMatches.some(function(m) {
                   return m.replace(/"text"\s*:\s*"/, '').slice(0, -1).length > 0;
                 });
                 if (!hasNonEmptyText) {
-                  // 找到当前 lines 中 message_stop 事件的位置,在它之前插入 fallback
                   var fallbackSse = 'event: content_block_start\n'
                     + 'data: {"type":"content_block_start","index":99,"content_block":{"type":"text","text":""}}\n\n'
                     + 'event: content_block_delta\n'
                     + 'data: {"type":"content_block_delta","index":99,"delta":{"type":"text_delta","text":"OK"}}\n\n'
                     + 'event: content_block_stop\n'
                     + 'data: {"type":"content_block_stop","index":99}\n\n';
-                  // SSE 事件以 \n\n 分隔;lines 是单行 split('\n') 结果,
-                  // 这里用整个 processedLines 字符串检测 message_stop
                   var stopMatch = processedLines.match(/^event: message_stop\s*$/m);
                   if (stopMatch) {
-                    // 在 message_stop 之前注入 (chunk 整段直接写)
                     var before = processedLines.substring(0, stopMatch.index);
                     var after = processedLines.substring(stopMatch.index);
-                    res.write(before);
-                    res.write(fallbackSse);
-                    res.write(after);
+                    writeOrDefer(before);
+                    writeOrDefer(fallbackSse);
+                    writeOrDefer(after);
                     fallbackInjected = true;
                     log('AUTO MODE FALLBACK (stream): 注入占位 text_delta 在 message_stop 前,model=' + originalModel);
                   } else {
-                    // 还没看到 message_stop,先按原样转发
-                    res.write(processedLines);
+                    writeOrDefer(processedLines);
                   }
                 } else {
-                  res.write(processedLines);
+                  writeOrDefer(processedLines);
                 }
               } else {
-                res.write(processedLines);
+                writeOrDefer(processedLines);
+              }
+              if (!headersSent && deferredOutput.length > DEFERRED_MAX_BYTES) {
+                upRes.destroy();
+                failClosed('deferred buffer overflow');
               }
             });
             upRes.on('end', function() {
               streamFinished = true;
+              if (!headersSent) { failClosed('stream completed without message_receipt'); return; }
               if (leftover) { fullText += leftover; res.write(leftover); }
               if (!res.writableEnded) res.end();
               // Extract thinking blocks from streaming response for caching
@@ -447,6 +520,7 @@ var server = http.createServer(function(req, res) {
             var streamFinished = false;
             upRes.on('aborted', function() {
               if (streamFinished) return;
+              if (!headersSent) { streamFinished = true; failClosed('stream aborted before message_receipt'); return; }
               streamFinished = true;
               if (!res.writableEnded) {
                 try {
@@ -459,6 +533,7 @@ var server = http.createServer(function(req, res) {
             });
             upRes.on('close', function() {
               if (streamFinished) return;
+              if (!headersSent) { streamFinished = true; failClosed('stream closed before message_receipt'); return; }
               streamFinished = true;
               if (!res.writableEnded) {
                 // 上游无声断连,SSE 不完整。补一个 max_tokens 截断结尾,
@@ -507,6 +582,9 @@ var server = http.createServer(function(req, res) {
               } else {
                 try {
                   var rj = JSON.parse(respBody);
+                  if(!rj.id){ res.writeHead(502,mergeHeaders({'Content-Type':'application/json','Content-Length':Buffer.byteLength(JSON.stringify({error:{type:'missing_message_receipt',message:'non-streaming response missing id'}}))},dispatchHeaders)); res.end(JSON.stringify({error:{type:'missing_message_receipt',message:'non-streaming response missing id'}})); log('NON-STREAM FAIL CLOSED: missing id model='+originalModel); return; }
+                  var rcpRes = recordMessageReceipt(rj.id,resolved,originalModel,dispatchId);
+                  if(rcpRes.status!=='stored'&&rcpRes.status!=='idempotent'){ res.writeHead(502,mergeHeaders({'Content-Type':'application/json','Content-Length':Buffer.byteLength(JSON.stringify({error:{type:'missing_message_receipt',message:'receipt '+rcpRes.status}}))},dispatchHeaders)); res.end(JSON.stringify({error:{type:'missing_message_receipt',message:'receipt '+rcpRes.status}})); log('NON-STREAM FAIL CLOSED: receipt '+rcpRes.status+' model='+originalModel); return; }
                   var blocks = [];
                   if (rj.content && Array.isArray(rj.content)) {
                     rj.content.forEach(function(c) {
@@ -532,9 +610,10 @@ var server = http.createServer(function(req, res) {
               var fixed = JSON.stringify(rj); var hdrs=mergeHeaders(upRes.headers,dispatchHeaders); delete hdrs["transfer-encoding"]; hdrs["content-length"]=Buffer.byteLength(fixed); res.writeHead(upRes.statusCode, hdrs); res.end(fixed);
                   log('OK model=' + rj.model + ' cached=' + blocks.length);
                 } catch(e) {
-                  log('OK (raw pipe)');
-                  res.writeHead(upRes.statusCode, mergeHeaders(upRes.headers, dispatchHeaders));
-                  res.end(respBody);
+                  log('NON-STREAM FAIL CLOSED: JSON parse failed model=' + originalModel);
+                  var errFail = JSON.stringify({ error: { type: 'missing_message_receipt', message: 'non-streaming JSON parse failed' } });
+                  res.writeHead(502, mergeHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(errFail) }, dispatchHeaders));
+                  res.end(errFail);
                 }
               }
             });
@@ -545,8 +624,10 @@ var server = http.createServer(function(req, res) {
           // 防御性:res 可能已关闭(被 coolDown/429 提前 end),不检查会抛 ERR_STREAM_WRITE_AFTER_END
           if (res.writableEnded) return;
           try {
+            var errType = (isStream && _streamDeferred) ? 'missing_message_receipt' : 'provider_network_error';
+            var errMsg = (isStream && _streamDeferred) ? 'stream interrupted before message_receipt' : '上游连接失败';
             res.writeHead(502, mergeHeaders({ 'Content-Type': 'application/json' }, dispatchHeaders));
-            res.end(JSON.stringify({error:{type:'provider_network_error',message:'上游连接失败'}}));
+            res.end(JSON.stringify({error:{type:errType,message:errMsg}}));
           } catch(_) {}
         });
         upstream.write(postData);
@@ -567,6 +648,16 @@ var server = http.createServer(function(req, res) {
     res.end(JSON.stringify({ object: 'list', data: models }));
   } else if (req.url === '/health') {
     res.writeHead(200); res.end(JSON.stringify({ status: 'ok' }));
+  } else if(req.method==='GET'&&req.url.startsWith('/v1/receipts/by-message-id/')){
+    function jsonReplyRcpt(r,s,b){try{r.writeHead(s,{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)});r.end(b)}catch(e){}}
+    var remote=req.socket.remoteAddress||'';
+    if(!receiptLib.isLoopbackAddress(remote))return jsonReplyRcpt(res,403,JSON.stringify({error:{type:'loopback_only'}}));
+    var id; try{id=decodeURIComponent(req.url.slice('/v1/receipts/by-message-id/'.length).split('?')[0])}catch(e){return jsonReplyRcpt(res,400,JSON.stringify({error:{type:'invalid_message_id'}}))}
+    if(!/^[-A-Za-z0-9_:.]{1,256}$/.test(id))return jsonReplyRcpt(res,400,JSON.stringify({error:{type:'invalid_message_id'}}));
+    var found=receiptIndex.get(id);
+    if(found.status==='missing')return jsonReplyRcpt(res,404,JSON.stringify({error:{type:'receipt_not_found'}}));
+    if(found.status==='conflict')return jsonReplyRcpt(res,409,JSON.stringify({error:{type:'receipt_conflict'}}));
+    return jsonReplyRcpt(res,200,JSON.stringify(found.receipt));
   } else {
     res.writeHead(404); res.end('Not found');
   }
