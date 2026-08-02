@@ -84,7 +84,7 @@ cat > "${FIXTURE_DIR}/proxy.js.placeholder" <<'EOF'
 var PROVIDERS = {
   ds: { url: 'https://api.deepseek.com/x', key: '__DS_KEY__' },
   mm: { url: 'https://api.minimaxi.com/x', key: '__MM_KEY__' },
-  bd: { url: 'https://qianfan.baidubce.com/x', key: '__BD_KEY__' }
+  hs: { url: 'https://ark.cn-beijing.volces.com/x', key: '__HS_KEY__' }
 };
 EOF
 
@@ -93,7 +93,7 @@ cat > "${FIXTURE_DIR}/proxy.js.replaced" <<'EOF'
 var PROVIDERS = {
   ds: { url: 'https://api.deepseek.com/x', key: 'sk-real-ds-key' },
   mm: { url: 'https://api.minimaxi.com/x', key: 'sk-cp-real-mm-key' },
-  bd: { url: 'https://qianfan.baidubce.com/x', key: 'bce-v3-real-bd-key' }
+  hs: { url: 'https://ark.cn-beijing.volces.com/x', key: 'sk-real-hs-key' }
 };
 EOF
 
@@ -103,10 +103,10 @@ replace_placeholders() {
   local proxy_file="$1"
   local ds_key="$2"
   local mm_key="$3"
-  local bd_key="$4"
+  local hs_key="$4"
 
   # 断言 1:替换前必须存在占位符(防止源文件已被替换过)
-  if ! grep -qE '__DS_KEY__|__MM_KEY__|__BD_KEY__' "$proxy_file"; then
+  if ! grep -qE '__DS_KEY__|__MM_KEY__|__HS_KEY__' "$proxy_file"; then
     echo "    [ERROR] proxy.js 中未发现占位符,可能是已替换版本或被 git checkout 覆盖" >&2
     return 2  # 特殊退出码:占位符不存在
   fi
@@ -116,12 +116,12 @@ replace_placeholders() {
   tmp=$(mktemp)
   sed -e "s|__DS_KEY__|${ds_key}|g" \
       -e "s|__MM_KEY__|${mm_key}|g" \
-      -e "s|__BD_KEY__|${bd_key}|g" \
+      -e "s|__HS_KEY__|${hs_key}|g" \
       "$proxy_file" > "$tmp"
   mv "$tmp" "$proxy_file"
 
   # 断言 2:替换后必须无残留占位符(防止部分替换)
-  if grep -qE '__DS_KEY__|__MM_KEY__|__BD_KEY__' "$proxy_file"; then
+  if grep -qE '__DS_KEY__|__MM_KEY__|__HS_KEY__' "$proxy_file"; then
     echo "    [ERROR] 替换后仍有占位符残留,可能 keys 包含特殊字符" >&2
     return 3  # 特殊退出码:替换不完整
   fi
@@ -137,9 +137,9 @@ test_replace_placeholders_with_fixture() {
   local src="${FIXTURE_DIR}/proxy.js.placeholder"
   cp "$src" "${FIXTURE_DIR}/test1.js"
 
-  replace_placeholders "${FIXTURE_DIR}/test1.js" "sk-real-ds-key" "sk-cp-real-mm-key" "bce-v3-real-bd-key"
+  replace_placeholders "${FIXTURE_DIR}/test1.js" "sk-real-ds-key" "sk-cp-real-mm-key" "sk-real-hs-key"
 
-  assert_not_grep "${FIXTURE_DIR}/test1.js" "__DS_KEY__|__MM_KEY__|__BD_KEY__" "替换后无占位符残留"
+  assert_not_grep "${FIXTURE_DIR}/test1.js" "__DS_KEY__|__MM_KEY__|__HS_KEY__" "替换后无占位符残留"
 }
 
 test_replace_placeholders_rejects_already_replaced() {
@@ -150,7 +150,7 @@ test_replace_placeholders_rejects_already_replaced() {
 
   # 期望:返回非 0(占位符不存在,中止)
   local exit_code=0
-  replace_placeholders "${FIXTURE_DIR}/test2.js" "sk-x" "sk-x" "bce-x" || exit_code=$?
+  replace_placeholders "${FIXTURE_DIR}/test2.js" "sk-x" "sk-x" "sk-hs-x" || exit_code=$?
 
   if [[ $exit_code -eq 2 ]]; then
     echo -e "    ${GREEN}✅ PASS${NC}: 已替换版本被正确拒绝(非静默成功)"
@@ -164,7 +164,7 @@ test_replace_placeholders_rejects_already_replaced() {
 test_install_sh_has_replace_function() {
   # GREEN: install.sh 必须有"占位符不存在则报错"的代码
   # 防止未来 install.sh 静默回归
-  assert_grep "$INSTALL_SH" "__DS_KEY__|__MM_KEY__|__BD_KEY__" "install.sh 中存在占位符定义"
+  assert_grep "$INSTALL_SH" "__DS_KEY__|__MM_KEY__|__HS_KEY__" "install.sh 中存在占位符定义"
   if grep -qE "(占位符不存在|占位符已被替换|未发现占位符|placeholder.*not.*found|placeholder.*missing|跳过替换)" "$INSTALL_SH"; then
     echo -e "    ${GREEN}✅ PASS${NC}: install.sh 有占位符缺失保护"
     return 0

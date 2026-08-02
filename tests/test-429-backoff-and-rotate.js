@@ -92,7 +92,7 @@ test('非流式 /v1/messages 仍可转发(可能 4xx/5xx 但不能崩)', functio
 // 测试 7:流式 429 改写为 503 + Retry-After(v1.3.2 关键修复:必须丢弃上游 body 立刻拒收)
 test('流式 429 必须改写为 503 + Retry-After(不能再透传 429)', function() {
   var u = new URL(PROXY_URL);
-  var body = JSON.stringify({ model: 'bd,glm5.2', messages: [{role:'user',content:'hi'}], max_tokens: 16, stream: true });
+  var body = JSON.stringify({ model: 'hs,glm5.2', messages: [{role:'user',content:'hi'}], max_tokens: 16, stream: true });
   var opts = { hostname: u.hostname, port: u.port || 80, path: '/v1/messages', method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
   var req = http.request(opts, function(res) {
